@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Datos personales: nunca se suben al repositorio
+data/
+*.db
+*.zip
+*.fit
+*.fit.gz
+*.gpx
+*.tcx
+*.tcx.gz
