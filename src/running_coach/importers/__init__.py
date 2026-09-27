@@ -1,0 +1,1 @@
+"""Importadores: traducen cada formato de archivo al modelo común."""
