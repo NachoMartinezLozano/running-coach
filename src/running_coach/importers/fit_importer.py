@@ -6,21 +6,21 @@ from pathlib import Path
 
 import fitdecode
 
-from running_coach.importers.common import file_hash, read_file_bytes
+from running_coach.importers.common import compute_km_splits, file_hash, read_file_bytes
 from running_coach.models import Activity, TrackPoint
 
 # El formato FIT guarda las coordenadas en "semicírculos" (enteros de 32 bits)
 SEMICIRCLES_TO_DEGREES = 180 / 2**31
 
 
-def parse_fit_file(path: Path, source: str = "bulk_export") -> tuple[Activity, list[TrackPoint]]:
+def parse_fit_file(path: Path, source: str = "bulk_export") -> Activity:
     """Punto de entrada: lee un .fit o .fit.gz del disco."""
     data = read_file_bytes(path)
     return parse_fit(data, source=source, source_ref=file_hash(data))
 
 
-def parse_fit(data: bytes, *, source: str, source_ref: str) -> tuple[Activity, list[TrackPoint]]:
-    """Traduce el contenido de un archivo FIT a una Activity y su lista de puntos."""
+def parse_fit(data: bytes, *, source: str, source_ref: str) -> Activity:
+    """Traduce el contenido de un archivo FIT a una Activity con sus parciales."""
     session = None
     points: list[TrackPoint] = []
 
@@ -39,7 +39,8 @@ def parse_fit(data: bytes, *, source: str, source_ref: str) -> tuple[Activity, l
         raise ValueError("El archivo no contiene ni resumen ni registros")
 
     activity = _build_activity(session, points, source=source, source_ref=source_ref)
-    return activity, points
+    activity.splits = compute_km_splits(points)
+    return activity
 
 
 def _build_activity(session, points: list[TrackPoint], *, source: str, source_ref: str) -> Activity:
