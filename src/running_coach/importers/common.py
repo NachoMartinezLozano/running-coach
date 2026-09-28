@@ -2,6 +2,7 @@
 
 import gzip
 import hashlib
+import math
 from pathlib import Path
 
 from running_coach.models import Split, TrackPoint
@@ -97,3 +98,49 @@ def _make_split(index, distance, duration, hrs, alt_start, alt_end) -> Split:
         elevation_change_m=(round(alt_end - alt_start, 1) + 0.0
                     if alt_start is not None and alt_end is not None else None),
     )
+
+def xml_local_name(tag: str) -> str:
+    """'{http://www.topografix.com/GPX/1/1}trkpt' -> 'trkpt'"""
+    return tag.rsplit("}", 1)[-1]
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia en metros entre dos coordenadas, sobre la superficie de la Tierra."""
+    earth_radius_m = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = phi2 - phi1
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * earth_radius_m * math.asin(math.sqrt(a))
+
+
+def fill_distances(points: list[TrackPoint]) -> None:
+    """Calcula la distancia acumulada de cada punto a partir de sus coordenadas.
+
+    Modifica los puntos directamente. Los puntos sin coordenadas heredan
+    la distancia del último punto que sí las tenía.
+    """
+    total = 0.0
+    last_with_position = None
+    for point in points:
+        if point.lat is not None and point.lon is not None:
+            if last_with_position is not None:
+                total += haversine_m(last_with_position.lat, last_with_position.lon, point.lat, point.lon)
+            last_with_position = point
+        point.distance_m = total
+
+
+def elevation_gain(altitudes: list[float | None], threshold_m: float = 2.0) -> float | None:
+    """Desnivel positivo acumulado, ignorando oscilaciones menores que `threshold_m`."""
+    valid = [a for a in altitudes if a is not None]
+    if not valid:
+        return None
+    gain = 0.0
+    reference = valid[0]
+    for altitude in valid[1:]:
+        if altitude - reference >= threshold_m:  # subida real: la sumamos
+            gain += altitude - reference
+            reference = altitude
+        elif reference - altitude >= threshold_m:  # bajada real: nueva referencia
+            reference = altitude
+    return round(gain, 1)

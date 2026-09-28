@@ -44,6 +44,7 @@ class Activity:
 
     # Datos que dependen de la fuente (una entrada manual no tendrá todos)
     sport: str = "running"
+    device: str | None = None  # con qué se grabó: "Amazfit Active 2 (Round)", "Strava (app móvil)"...
     moving_time_s: float | None = None  # tiempo sin contar las pausas
     avg_hr: float | None = None
     max_hr: float | None = None

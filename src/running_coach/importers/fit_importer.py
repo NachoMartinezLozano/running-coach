@@ -22,6 +22,7 @@ def parse_fit_file(path: Path, source: str = "bulk_export") -> Activity:
 def parse_fit(data: bytes, *, source: str, source_ref: str) -> Activity:
     """Traduce el contenido de un archivo FIT a una Activity con sus parciales."""
     session = None
+    file_id = None
     points: list[TrackPoint] = []
 
     with fitdecode.FitReader(io.BytesIO(data)) as fit:
@@ -34,12 +35,15 @@ def parse_fit(data: bytes, *, source: str, source_ref: str) -> Activity:
                     points.append(point)
             elif frame.name == "session" and session is None:
                 session = frame  # nos quedamos con la primera sesión
+            elif frame.name == "file_id" and file_id is None:
+                file_id = frame
 
     if session is None and not points:
         raise ValueError("El archivo no contiene ni resumen ni registros")
 
     activity = _build_activity(session, points, source=source, source_ref=source_ref)
     activity.splits = compute_km_splits(points)
+    activity.device = _value(file_id, "product_name")
     return activity
 
 
