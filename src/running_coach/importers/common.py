@@ -12,6 +12,7 @@ from running_coach.models import Split, TrackPoint
 # y en él se avanza a menos de 0,5 m/s (prácticamente parado).
 PAUSE_MIN_GAP_S = 10
 PAUSE_MAX_SPEED_MS = 0.5
+MAX_RUNNING_SPEED_MS = 7.0
 
 
 def read_file_bytes(path: Path) -> bytes:
@@ -114,19 +115,27 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * earth_radius_m * math.asin(math.sqrt(a))
 
 
-def fill_distances(points: list[TrackPoint]) -> None:
+def fill_distances(points: list[TrackPoint], max_speed_ms: float = MAX_RUNNING_SPEED_MS) -> None:
     """Calcula la distancia acumulada de cada punto a partir de sus coordenadas.
 
-    Modifica los puntos directamente. Los puntos sin coordenadas heredan
-    la distancia del último punto que sí las tenía.
+    Modifica los puntos directamente. Descarta los saltos del GPS: un punto que
+    implicaría ir a más de `max_speed_ms` desde el último punto válido (el "ancla")
+    se ignora, y el siguiente se mide desde ese ancla, así no se pierde la
+    distancia real. Los puntos sin coordenadas o descartados heredan la
+    distancia acumulada hasta el ancla.
     """
     total = 0.0
-    last_with_position = None
+    anchor = None
     for point in points:
         if point.lat is not None and point.lon is not None:
-            if last_with_position is not None:
-                total += haversine_m(last_with_position.lat, last_with_position.lon, point.lat, point.lon)
-            last_with_position = point
+            if anchor is None:
+                anchor = point
+            else:
+                step = haversine_m(anchor.lat, anchor.lon, point.lat, point.lon)
+                dt = (point.time - anchor.time).total_seconds()
+                if dt > 0 and step / dt <= max_speed_ms:
+                    total += step
+                    anchor = point
         point.distance_m = total
 
 
