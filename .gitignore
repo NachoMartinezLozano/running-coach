@@ -18,3 +18,4 @@ data/
 *.gpx
 *.tcx
 *.tcx.gz
+.env
