@@ -1,37 +1,12 @@
 """Tests del importador de la exportación completa, con una exportación inventada."""
 
-import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
+from factories import make_export, make_gpx
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
 
 T0 = datetime(2025, 6, 10, 18, 0, tzinfo=timezone.utc)
-METERS_PER_DEGREE_LAT = 6_371_000 * math.pi / 180
 FILTERS = ImportFilters(since=date(2025, 1, 1))
-
-HEADER = ("ID de actividad,Tipo de actividad,Descripción de la actividad,Nombre del archivo,"
-          "Distancia,Tiempo en movimiento,Desnivel positivo,Esfuerzo Percibido\n")
-
-
-def make_gpx(start: datetime, seconds: int, speed_ms: float = 3.0) -> str:
-    """Un GPX como los de la app de Strava: sin pulsaciones, un punto por segundo hacia el norte."""
-    step = speed_ms / METERS_PER_DEGREE_LAT
-    points = "".join(
-        f'<trkpt lat="{40 + s * step:.7f}" lon="-3.0"><ele>100</ele>'
-        f'<time>{(start + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%SZ")}</time></trkpt>'
-        for s in range(seconds + 1)
-    )
-    return ('<?xml version="1.0"?><gpx creator="StravaGPX" xmlns="http://www.topografix.com/GPX/1/1">'
-            f"<trk><type>running</type><trkseg>{points}</trkseg></trk></gpx>")
-
-
-def make_export(tmp_path, rows: list[str], files: dict[str, str]):
-    """Crea una carpeta con la estructura de la exportación de Strava."""
-    (tmp_path / "activities").mkdir()
-    (tmp_path / "activities.csv").write_bytes((HEADER + "\n".join(rows) + "\n").encode("utf-8"))
-    for name, content in files.items():
-        (tmp_path / "activities" / name).write_bytes(content.encode("utf-8"))
-    return tmp_path
 
 
 def test_gpx_uses_strava_totals_and_csv_data(tmp_path):

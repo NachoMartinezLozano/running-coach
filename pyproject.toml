@@ -1,7 +1,7 @@
 [project]
 name = "running-coach"
 version = "0.1.0"
-description = "Add your description here"
+description = "Analiza tus carreras del Amazfit y planifica entrenamientos con Claude"
 readme = "README.md"
 authors = [
     { name = "José Ignacio Martínez-Lozano Pérez", email = "nachomartinezlozanoperez@gmail.com" }
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-running-coach = "running_coach:main"
+coach = "running_coach.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]

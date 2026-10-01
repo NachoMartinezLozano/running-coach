@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from running-coach!")
+"""running-coach: análisis de carreras y planificación de entrenamientos con Claude."""
