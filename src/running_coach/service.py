@@ -10,7 +10,8 @@ from pathlib import Path
 
 import psycopg
 
-from running_coach import db
+from running_coach import db, analytics
+from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
 
 
@@ -30,3 +31,7 @@ def import_strava_export_into_db(conn: psycopg.Connection, export_dir: Path,
     inserted, duplicates = db.save_activities(conn, result.activities)
     return ImportSummary(inserted=inserted, duplicates=duplicates,
                          skipped=result.skipped, errors=result.errors)
+
+def weekly_summary(conn: psycopg.Connection, weeks: int = 12) -> list[analytics.WeekSummary]:
+    """Resumen semanal de las últimas semanas, en la zona horaria del atleta."""
+    return analytics.weekly_summary(conn, weeks, tz=timezone_name())

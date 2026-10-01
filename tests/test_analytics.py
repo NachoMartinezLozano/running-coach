@@ -1,0 +1,83 @@
+"""Tests de las consultas de análisis, contra la base de datos de tests."""
+
+from datetime import date, datetime, timezone
+
+import pytest
+
+from running_coach import analytics, db
+from running_coach.models import Activity
+
+TZ = "Europe/Madrid"
+TODAY = date(2026, 9, 25)  # jueves: la semana actual empieza el lunes 21
+
+
+def add_run(conn, start: datetime, km: float, minutes: float, hr: float | None = None,
+            sport: str = "running") -> None:
+    db.insert_activity(conn, Activity(
+        source="manual", source_ref=f"{start.isoformat()}-{sport}", sport=sport,
+        start_time=start, distance_m=km * 1000, duration_s=minutes * 60,
+        moving_time_s=minutes * 60, avg_hr=hr,
+    ))
+
+
+def utc(*args) -> datetime:
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+def test_empty_weeks_are_included(conn):
+    add_run(conn, utc(2026, 9, 22, 18), km=5, minutes=30)
+
+    weeks = analytics.weekly_summary(conn, weeks=4, tz=TZ, today=TODAY)
+
+    assert [w.week_start for w in weeks] == [date(2026, 8, 31), date(2026, 9, 7),
+                                             date(2026, 9, 14), date(2026, 9, 21)]
+    assert [w.runs for w in weeks] == [0, 0, 0, 1]
+    assert weeks[0].pace_s_per_km is None
+
+
+def test_weeks_use_local_time(conn):
+    # Domingo 20 a las 23:30 en Madrid (21:30 UTC): semana del 14
+    add_run(conn, utc(2026, 9, 20, 21, 30), km=10, minutes=60)
+    # Lunes 21 a las 00:30 en Madrid, aunque en UTC aún sea domingo: semana del 21
+    add_run(conn, utc(2026, 9, 20, 22, 30), km=4, minutes=20)
+
+    weeks = analytics.weekly_summary(conn, weeks=2, tz=TZ, today=TODAY)
+
+    assert weeks[0].distance_m == 10_000
+    assert weeks[1].distance_m == 4_000
+
+
+def test_totals_pace_and_longest_run(conn):
+    add_run(conn, utc(2026, 9, 21, 18), km=5, minutes=30)
+    add_run(conn, utc(2026, 9, 23, 18), km=10, minutes=55)
+
+    week = analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0]
+
+    assert week.runs == 2
+    assert week.distance_m == 15_000
+    assert week.longest_run_m == 10_000
+    assert week.pace_s_per_km == pytest.approx(85 * 60 / 15)  # 85 min en 15 km = 5:40/km
+
+
+def test_other_sports_are_ignored(conn):
+    add_run(conn, utc(2026, 9, 22, 18), km=30, minutes=60, sport="cycling")
+
+    assert analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0].runs == 0
+
+
+def test_avg_hr_only_counts_runs_with_heart_rate(conn):
+    add_run(conn, utc(2026, 9, 21, 18), km=4, minutes=20, hr=160)
+    add_run(conn, utc(2026, 9, 22, 18), km=6, minutes=30, hr=170)
+    add_run(conn, utc(2026, 9, 23, 18), km=5, minutes=30)  # del móvil: sin pulsaciones
+
+    week = analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0]
+
+    assert week.runs_with_hr == 2
+    # Ponderada por tiempo: (160·20 + 170·30) / 50 = 166, sin contar la carrera sin FC como 0
+    assert week.avg_hr == pytest.approx(166)
+
+
+def test_week_without_heart_rate_has_no_average(conn):
+    add_run(conn, utc(2026, 9, 21, 18), km=5, minutes=30)
+
+    assert analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0].avg_hr is None

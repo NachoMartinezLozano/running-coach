@@ -1,4 +1,4 @@
-"""Interfaz de línea de comandos: `coach import ...`."""
+"""Interfaz de línea de comandos: `coach import` y `coach weeks`."""
 
 import argparse
 import sys
@@ -9,7 +9,8 @@ import psycopg
 
 from running_coach import db
 from running_coach.importers.strava_export import ImportFilters
-from running_coach.service import import_strava_export_into_db
+from running_coach.metrics import format_duration, format_pace
+from running_coach.service import import_strava_export_into_db, weekly_summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Deporte a importar (repetible). Por defecto: running")
     imp.add_argument("--min-distance", type=float, default=ImportFilters.min_distance_m, metavar="METROS",
                      help=f"Distancia mínima (por defecto: {ImportFilters.min_distance_m:.0f})")
+
+    weeks = commands.add_parser("weeks", help="Resumen semanal de tus carreras")
+    weeks.add_argument("--weeks", type=int, default=12, help="Número de semanas (por defecto: 12)")
     return parser
 
 
@@ -37,8 +41,14 @@ def filters_from_args(args: argparse.Namespace) -> ImportFilters:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "import":
-        return _run_import(args)
+    try:
+        if args.command == "import":
+            return _run_import(args)
+        if args.command == "weeks":
+            return _run_weeks(args)
+    except psycopg.OperationalError as exc:
+        print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
+              f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
     return 1
 
 
@@ -51,13 +61,8 @@ def _run_import(args: argparse.Namespace) -> int:
 
     since = filters.since.isoformat() if filters.since else "el principio"
     print(f"Importando {args.export_dir} (desde {since}; deportes: {', '.join(sorted(filters.sports))})...")
-    try:
-        with db.connect() as conn:
-            summary = import_strava_export_into_db(conn, args.export_dir, filters)
-    except psycopg.OperationalError as exc:
-        print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
-              f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
-        return 1
+    with db.connect() as conn:
+        summary = import_strava_export_into_db(conn, args.export_dir, filters)
 
     skipped = ", ".join(f"{reason}: {n}" for reason, n in summary.skipped.most_common())
     print(f"  Nuevas:       {summary.inserted}")
@@ -67,3 +72,22 @@ def _run_import(args: argparse.Namespace) -> int:
     for error in summary.errors:
         print(f"    {error}")
     return 1 if summary.errors else 0
+
+
+def _run_weeks(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        weeks = weekly_summary(conn, args.weeks)
+
+    print(f"{'Semana':<12}{'Carreras':>9}{'Km':>8}{'Tiempo':>10}{'Ritmo':>11}{'Larga':>8}{'FC':>7}")
+    partial_hr = False
+    for w in weeks:
+        hr = "-" if w.avg_hr is None else f"{w.avg_hr:.0f}"
+        if w.avg_hr is not None and w.runs_with_hr < w.runs:
+            hr += "*"
+            partial_hr = True
+        print(f"{w.week_start.isoformat():<12}{w.runs:>9}{w.distance_m / 1000:>8.1f}"
+              f"{format_duration(w.moving_time_s):>10}{format_pace(w.pace_s_per_km):>11}"
+              f"{w.longest_run_m / 1000:>8.1f}{hr:>7}")
+    if partial_hr:
+        print("* FC media solo de las carreras con pulsómetro de esa semana")
+    return 0

@@ -34,3 +34,7 @@ def _required(name: str) -> str:
     if not value:
         raise RuntimeError(f"Falta la variable {name}. ¿Has creado el archivo .env a partir de .env.example?")
     return value
+
+def timezone_name() -> str:
+    """Zona horaria del atleta: decide qué día y qué semana es cada carrera."""
+    return os.environ.get("RUNNING_COACH_TZ", "Europe/Madrid")
