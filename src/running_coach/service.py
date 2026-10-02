@@ -13,8 +13,9 @@ import psycopg
 from running_coach import db, analytics
 from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
-from running_coach.models import AthleteProfile
+from running_coach.models import AthleteProfile, Activity
 from running_coach.metrics import HeartRateZone, hr_zones
+from running_coach.importers.files import parse_activity_file
 
 
 @dataclass
@@ -59,3 +60,12 @@ def heart_rate_zones(conn: psycopg.Connection) -> list[HeartRateZone]:
 def intensity_distribution(conn: psycopg.Connection, weeks: int = 12) -> analytics.IntensityDistribution:
     """Tiempo en cada zona de FC durante las últimas semanas."""
     return analytics.intensity_distribution(conn, heart_rate_zones(conn), weeks, tz=timezone_name())
+
+def add_activity_file(conn: psycopg.Connection, path: Path) -> tuple[Activity, int | None]:
+    """Añade una actividad desde un archivo suelto (.fit, .gpx o .tcx, comprimido o no).
+
+    Devuelve la actividad leída y su id, o None como id si ya estaba guardada.
+    """
+    activity = parse_activity_file(path, source="fit_upload")
+    db.init_schema(conn)
+    return activity, db.insert_activity(conn, activity)

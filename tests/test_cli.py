@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from factories import make_export, make_gpx
 from running_coach.cli import build_parser, filters_from_args
 from running_coach.importers.strava_export import ImportFilters
-from running_coach.service import import_strava_export_into_db
+from running_coach.service import import_strava_export_into_db, add_activity_file
 
 
 def parse(*argv: str):
@@ -43,3 +43,15 @@ def test_import_into_db_twice(conn, tmp_path):
     assert (first.inserted, first.duplicates) == (1, 0)
     assert (second.inserted, second.duplicates) == (0, 1)
     assert first.skipped["otro deporte"] == 1
+
+def test_add_activity_file(conn, tmp_path):
+    path = tmp_path / "carrera.gpx"
+    path.write_bytes(make_gpx(datetime(2026, 10, 1, 18, 0, tzinfo=timezone.utc), 1200).encode("utf-8"))
+
+    activity, activity_id = add_activity_file(conn, path)
+    _, again = add_activity_file(conn, path)
+
+    assert activity_id is not None
+    assert activity.source == "fit_upload"
+    assert len(activity.splits) == 4
+    assert again is None  # el mismo archivo no se guarda dos veces

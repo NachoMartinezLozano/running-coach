@@ -13,6 +13,7 @@ from running_coach.metrics import format_duration, format_pace
 from running_coach.models import AthleteProfile
 from running_coach.service import (
     ProfileIncompleteError,
+    add_activity_file,
     get_profile,
     import_strava_export_into_db,
     intensity_distribution,
@@ -49,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     prof.add_argument("--notes", metavar="TEXTO", help="Lesiones, disponibilidad, preferencias...")
     zones = commands.add_parser("zones", help="Tiempo en cada zona de pulsaciones")
     zones.add_argument("--weeks", type=int, default=12, help="Número de semanas (por defecto: 12)")
+    add = commands.add_parser("add", help="Añade actividades desde archivos .fit, .gpx o .tcx")
+    add.add_argument("files", type=Path, nargs="+", metavar="ARCHIVO", help="Uno o varios archivos de actividad")
     return parser
 
 
@@ -76,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_profile(args)
         if args.command == "zones":
             return _run_zones(args)
+        if args.command == "add":
+            return _run_add(args)
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
@@ -144,6 +149,20 @@ def _run_zones(args: argparse.Namespace) -> int:
     print("Aproximación por kilómetro: cada parcial cuenta entero en la zona de su FC media.")
     return 0
 
+def _run_add(args: argparse.Namespace) -> int:
+    errors = 0
+    with db.connect() as conn:
+        for path in args.files:
+            try:
+                activity, activity_id = add_activity_file(conn, path)
+            except (OSError, ValueError) as exc:
+                print(f"  ERROR    {path.name}: {exc}", file=sys.stderr)
+                errors += 1
+                continue
+            status = "Añadida " if activity_id is not None else "Ya existía"
+            print(f"  {status} {activity.start_time.astimezone():%Y-%m-%d %H:%M}  {activity.sport:<10}"
+                  f"{activity.distance_m / 1000:6.2f} km  {format_duration(activity.moving_time_s or activity.duration_s)}")
+    return 1 if errors else 0
 
 def _zone_range(zone) -> str:
     if zone.high_bpm is None:
