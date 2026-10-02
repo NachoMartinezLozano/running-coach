@@ -5,7 +5,7 @@ from datetime import date
 
 import psycopg
 
-from running_coach.metrics import pace_s_per_km
+from running_coach.metrics import HeartRateZone, pace_s_per_km, zone_index
 
 WEEKLY_SUMMARY = """
     WITH weeks AS (
@@ -62,3 +62,41 @@ def weekly_summary(conn: psycopg.Connection, weeks: int, tz: str,
     """Resumen de las últimas `weeks` semanas (de lunes a domingo), la actual incluida."""
     rows = conn.execute(WEEKLY_SUMMARY, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
     return [WeekSummary(**row) for row in rows]
+
+SPLITS_IN_PERIOD = """
+    SELECT s.avg_hr, s.duration_s
+    FROM splits s
+    JOIN activities a ON a.id = s.activity_id
+    WHERE a.sport = 'running'
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >=
+          date_trunc('week', COALESCE(%(today)s::date, (now() AT TIME ZONE %(tz)s)::date)::timestamp)::date
+              - (%(weeks)s::int - 1) * 7
+"""
+
+
+@dataclass
+class IntensityDistribution:
+    zones: list[HeartRateZone]
+    seconds_in_zone: list[float]  # una posición por zona
+    unmeasured_s: float  # tiempo de parciales sin pulsaciones (carreras con el móvil)
+
+    @property
+    def measured_s(self) -> float:
+        return sum(self.seconds_in_zone)
+
+
+def intensity_distribution(conn: psycopg.Connection, zones: list[HeartRateZone], weeks: int, tz: str,
+                           today: date | None = None) -> IntensityDistribution:
+    """Tiempo en cada zona durante las últimas `weeks` semanas.
+
+    Aproximación por kilómetro: cada parcial cuenta entero en la zona de su FC media.
+    """
+    rows = conn.execute(SPLITS_IN_PERIOD, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
+    seconds = [0.0] * len(zones)
+    unmeasured = 0.0
+    for row in rows:
+        if row["avg_hr"] is None:
+            unmeasured += row["duration_s"]
+        else:
+            seconds[zone_index(row["avg_hr"], zones)] += row["duration_s"]
+    return IntensityDistribution(zones, seconds, unmeasured)

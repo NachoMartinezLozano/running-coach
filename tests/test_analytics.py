@@ -5,7 +5,8 @@ from datetime import date, datetime, timezone
 import pytest
 
 from running_coach import analytics, db
-from running_coach.models import Activity
+from running_coach.metrics import hr_zones
+from running_coach.models import Activity, Split
 
 TZ = "Europe/Madrid"
 TODAY = date(2026, 9, 25)  # jueves: la semana actual empieza el lunes 21
@@ -81,3 +82,30 @@ def test_week_without_heart_rate_has_no_average(conn):
     add_run(conn, utc(2026, 9, 21, 18), km=5, minutes=30)
 
     assert analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0].avg_hr is None
+
+def test_intensity_distribution(conn):
+    run = Activity(source="manual", source_ref="con-parciales", start_time=utc(2026, 9, 22, 18),
+                   distance_m=3000, duration_s=1080, moving_time_s=1080)
+    run.splits = [
+        Split(index=1, distance_m=1000, duration_s=360, avg_hr=140),   # Z2
+        Split(index=2, distance_m=1000, duration_s=360, avg_hr=170),   # Z4
+        Split(index=3, distance_m=1000, duration_s=360, avg_hr=None),  # sin pulsómetro
+    ]
+    db.insert_activity(conn, run)
+
+    result = analytics.intensity_distribution(conn, hr_zones(190, 57), weeks=1, tz=TZ, today=TODAY)
+
+    assert result.seconds_in_zone == [0, 360, 0, 360, 0]
+    assert result.unmeasured_s == 360
+    assert result.measured_s == 720
+
+
+def test_intensity_distribution_ignores_older_runs(conn):
+    old = Activity(source="manual", source_ref="antigua", start_time=utc(2026, 9, 10, 18),
+                   distance_m=1000, duration_s=360, moving_time_s=360)
+    old.splits = [Split(index=1, distance_m=1000, duration_s=360, avg_hr=150)]
+    db.insert_activity(conn, old)
+
+    result = analytics.intensity_distribution(conn, hr_zones(190, 57), weeks=1, tz=TZ, today=TODAY)
+
+    assert result.measured_s == 0

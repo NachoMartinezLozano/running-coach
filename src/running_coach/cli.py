@@ -11,7 +11,14 @@ from running_coach import db
 from running_coach.importers.strava_export import ImportFilters
 from running_coach.metrics import format_duration, format_pace
 from running_coach.models import AthleteProfile
-from running_coach.service import get_profile, import_strava_export_into_db, update_profile, weekly_summary
+from running_coach.service import (
+    ProfileIncompleteError,
+    get_profile,
+    import_strava_export_into_db,
+    intensity_distribution,
+    update_profile,
+    weekly_summary,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     prof.add_argument("--goal-date", type=date.fromisoformat, metavar="AAAA-MM-DD", help="Fecha del objetivo")
     prof.add_argument("--days", type=int, dest="weekly_days", metavar="N", help="Días por semana que puedes entrenar")
     prof.add_argument("--notes", metavar="TEXTO", help="Lesiones, disponibilidad, preferencias...")
+    zones = commands.add_parser("zones", help="Tiempo en cada zona de pulsaciones")
+    zones.add_argument("--weeks", type=int, default=12, help="Número de semanas (por defecto: 12)")
     return parser
 
 
@@ -65,11 +74,15 @@ def main(argv: list[str] | None = None) -> int:
             return _run_weeks(args)
         if args.command == "profile":
             return _run_profile(args)
+        if args.command == "zones":
+            return _run_zones(args)
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
     except psycopg.errors.CheckViolation as exc:
         print(f"Valor no válido: {exc.diag.message_primary}", file=sys.stderr)
+    except ProfileIncompleteError as exc:
+        print(f"{exc} Configúralo con: coach profile --max-hr PPM --resting-hr PPM", file=sys.stderr)
     return 1
 
 
@@ -113,6 +126,31 @@ def _run_weeks(args: argparse.Namespace) -> int:
         print("* FC media solo de las carreras con pulsómetro de esa semana")
     return 0
 
+def _run_zones(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        profile = get_profile(conn)
+        distribution = intensity_distribution(conn, args.weeks)
+
+    method = (f"Karvonen: FC máx. {profile.max_hr}, reposo {profile.resting_hr}"
+              if profile.resting_hr else f"% de la FC máxima ({profile.max_hr})")
+    print(f"Zonas ({method}), últimas {args.weeks} semanas\n")
+    print(f"{'Zona':<20}{'Pulsaciones':>14}{'Tiempo':>10}{'%':>6}")
+    for zone, seconds in zip(distribution.zones, distribution.seconds_in_zone):
+        share = seconds / distribution.measured_s if distribution.measured_s else 0
+        print(f"{zone.name:<20}{_zone_range(zone):>14}{format_duration(seconds):>10}{share:>6.0%}")
+
+    if distribution.unmeasured_s:
+        print(f"\nSin pulsómetro: {format_duration(distribution.unmeasured_s)} (no incluido en los porcentajes)")
+    print("Aproximación por kilómetro: cada parcial cuenta entero en la zona de su FC media.")
+    return 0
+
+
+def _zone_range(zone) -> str:
+    if zone.high_bpm is None:
+        return f"≥ {zone.low_bpm:.0f}"
+    if zone.low_bpm == 0:
+        return f"< {zone.high_bpm:.0f}"
+    return f"{zone.low_bpm:.0f}-{zone.high_bpm:.0f}"
 
 PROFILE_LABELS = {
     "max_hr": "FC máxima",
@@ -137,3 +175,4 @@ def _print_profile(profile: AthleteProfile) -> None:
     for name, label in PROFILE_LABELS.items():
         value = getattr(profile, name)
         print(f"  {label + ':':<20} {value if value is not None else '(sin configurar)'}")
+

@@ -14,6 +14,7 @@ from running_coach import db, analytics
 from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
 from running_coach.models import AthleteProfile
+from running_coach.metrics import HeartRateZone, hr_zones
 
 
 @dataclass
@@ -43,3 +44,18 @@ def get_profile(conn: psycopg.Connection) -> AthleteProfile:
 
 def update_profile(conn: psycopg.Connection, **fields) -> AthleteProfile:
     return db.update_profile(conn, **fields)
+
+class ProfileIncompleteError(Exception):
+    """Falta un dato del perfil necesario para un cálculo."""
+
+
+def heart_rate_zones(conn: psycopg.Connection) -> list[HeartRateZone]:
+    profile = db.get_profile(conn)
+    if profile.max_hr is None:
+        raise ProfileIncompleteError("Falta la FC máxima en el perfil.")
+    return hr_zones(profile.max_hr, profile.resting_hr)
+
+
+def intensity_distribution(conn: psycopg.Connection, weeks: int = 12) -> analytics.IntensityDistribution:
+    """Tiempo en cada zona de FC durante las últimas semanas."""
+    return analytics.intensity_distribution(conn, heart_rate_zones(conn), weeks, tz=timezone_name())
