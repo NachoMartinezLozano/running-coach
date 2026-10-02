@@ -7,7 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from running_coach.config import database_url
-from running_coach.models import Activity
+from running_coach.models import Activity, AthleteProfile
 
 INSERT_ACTIVITY = """
     INSERT INTO activities (
@@ -27,6 +27,23 @@ INSERT_ACTIVITY = """
 INSERT_SPLIT = """
     INSERT INTO splits (activity_id, split_index, distance_m, duration_s, avg_hr, elevation_change_m)
     VALUES (%s, %s, %s, %s, %s, %s)
+"""
+
+PROFILE_FIELDS = ("max_hr", "resting_hr", "sex", "goal", "goal_date", "weekly_days", "notes")
+
+# Solo cambia los campos que se pasan: COALESCE conserva el valor guardado si el nuevo es NULL
+UPSERT_PROFILE = """
+    INSERT INTO athlete_profile (id, max_hr, resting_hr, sex, goal, goal_date, weekly_days, notes)
+    VALUES (TRUE, %(max_hr)s, %(resting_hr)s, %(sex)s, %(goal)s, %(goal_date)s, %(weekly_days)s, %(notes)s)
+    ON CONFLICT (id) DO UPDATE SET
+        max_hr      = COALESCE(EXCLUDED.max_hr, athlete_profile.max_hr),
+        resting_hr  = COALESCE(EXCLUDED.resting_hr, athlete_profile.resting_hr),
+        sex         = COALESCE(EXCLUDED.sex, athlete_profile.sex),
+        goal        = COALESCE(EXCLUDED.goal, athlete_profile.goal),
+        goal_date   = COALESCE(EXCLUDED.goal_date, athlete_profile.goal_date),
+        weekly_days = COALESCE(EXCLUDED.weekly_days, athlete_profile.weekly_days),
+        notes       = COALESCE(EXCLUDED.notes, athlete_profile.notes),
+        updated_at  = now()
 """
 
 
@@ -86,3 +103,21 @@ def _activity_params(a: Activity) -> dict:
         "rpe": a.rpe,
         "notes": a.notes,
     }
+
+def get_profile(conn: psycopg.Connection) -> AthleteProfile:
+    """Devuelve el perfil guardado, o un perfil vacío si aún no se ha configurado."""
+    row = conn.execute("SELECT * FROM athlete_profile WHERE id").fetchone()
+    if row is None:
+        return AthleteProfile()
+    row.pop("id")
+    return AthleteProfile(**row)
+
+
+def update_profile(conn: psycopg.Connection, **fields) -> AthleteProfile:
+    """Actualiza solo los campos indicados (los que valen None no se tocan)."""
+    unknown = set(fields) - set(PROFILE_FIELDS)
+    if unknown:
+        raise ValueError(f"Campos de perfil desconocidos: {sorted(unknown)}")
+    params = {name: fields.get(name) for name in PROFILE_FIELDS}
+    conn.execute(UPSERT_PROFILE, params)
+    return get_profile(conn)

@@ -42,3 +42,16 @@ CREATE TABLE IF NOT EXISTS splits (
     elevation_change_m REAL,
     PRIMARY KEY (activity_id, split_index)
 );
+
+-- Perfil del atleta. Una sola fila: es una aplicación de un único usuario.
+CREATE TABLE IF NOT EXISTS athlete_profile (
+    id          BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),  -- solo puede valer TRUE: una fila
+    max_hr      SMALLINT CHECK (max_hr BETWEEN 120 AND 230),
+    resting_hr  SMALLINT CHECK (resting_hr BETWEEN 30 AND 100),
+    sex         TEXT CHECK (sex IN ('male', 'female')),  -- lo usa la fórmula de carga (TRIMP)
+    goal        TEXT,                                    -- p. ej. "Media maratón en menos de 2 horas"
+    goal_date   DATE,
+    weekly_days SMALLINT CHECK (weekly_days BETWEEN 1 AND 7),
+    notes       TEXT,                                    -- lesiones, disponibilidad, preferencias...
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

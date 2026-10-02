@@ -2,7 +2,7 @@
 independientemente de si viene de un .fit, un .gpx o un registro manual."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 
 
 @dataclass
@@ -58,3 +58,16 @@ class Activity:
 
     splits: list[Split] = field(default_factory=list)
     id: int | None = None  # lo asigna la base de datos al guardarla
+
+@dataclass
+class AthleteProfile:
+    """Datos del atleta que no salen de las carreras. Todos opcionales."""
+
+    max_hr: int | None = None
+    resting_hr: int | None = None
+    sex: str | None = None  # "male" o "female"
+    goal: str | None = None
+    goal_date: date | None = None
+    weekly_days: int | None = None  # días a la semana que puede entrenar
+    notes: str | None = None
+    updated_at: datetime | None = None

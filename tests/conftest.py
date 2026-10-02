@@ -21,6 +21,6 @@ def conn():
     except psycopg.OperationalError:
         pytest.skip("PostgreSQL de tests no disponible: ¿está arrancado el contenedor?")
     db.init_schema(connection)
-    connection.execute("TRUNCATE activities RESTART IDENTITY CASCADE")
+    connection.execute("TRUNCATE activities, athlete_profile RESTART IDENTITY CASCADE")
     yield connection
     connection.close()

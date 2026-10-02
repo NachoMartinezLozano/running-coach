@@ -13,6 +13,7 @@ import psycopg
 from running_coach import db, analytics
 from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
+from running_coach.models import AthleteProfile
 
 
 @dataclass
@@ -35,3 +36,10 @@ def import_strava_export_into_db(conn: psycopg.Connection, export_dir: Path,
 def weekly_summary(conn: psycopg.Connection, weeks: int = 12) -> list[analytics.WeekSummary]:
     """Resumen semanal de las últimas semanas, en la zona horaria del atleta."""
     return analytics.weekly_summary(conn, weeks, tz=timezone_name())
+
+def get_profile(conn: psycopg.Connection) -> AthleteProfile:
+    return db.get_profile(conn)
+
+
+def update_profile(conn: psycopg.Connection, **fields) -> AthleteProfile:
+    return db.update_profile(conn, **fields)

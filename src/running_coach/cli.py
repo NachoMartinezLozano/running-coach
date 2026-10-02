@@ -1,4 +1,4 @@
-"""Interfaz de línea de comandos: `coach import` y `coach weeks`."""
+"""Interfaz de línea de comandos: `coach init-db`, `import`, `weeks` y `profile`."""
 
 import argparse
 import sys
@@ -10,12 +10,15 @@ import psycopg
 from running_coach import db
 from running_coach.importers.strava_export import ImportFilters
 from running_coach.metrics import format_duration, format_pace
-from running_coach.service import import_strava_export_into_db, weekly_summary
+from running_coach.models import AthleteProfile
+from running_coach.service import get_profile, import_strava_export_into_db, update_profile, weekly_summary
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coach", description="Analiza tus carreras y planifica entrenamientos.")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    commands.add_parser("init-db", help="Crea las tablas que falten en la base de datos")
 
     imp = commands.add_parser("import", help="Importa la exportación de Strava a la base de datos")
     imp.add_argument("export_dir", type=Path, help="Carpeta descomprimida de la exportación de Strava")
@@ -28,6 +31,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     weeks = commands.add_parser("weeks", help="Resumen semanal de tus carreras")
     weeks.add_argument("--weeks", type=int, default=12, help="Número de semanas (por defecto: 12)")
+
+    prof = commands.add_parser("profile", help="Muestra o actualiza tu perfil de atleta")
+    prof.add_argument("--max-hr", type=int, metavar="PPM", help="Frecuencia cardíaca máxima (ppm)")
+    prof.add_argument("--resting-hr", type=int, metavar="PPM", help="Frecuencia cardíaca en reposo (ppm)")
+    prof.add_argument("--sex", choices=["male", "female"], help="Sexo (lo usa el cálculo de carga)")
+    prof.add_argument("--goal", metavar="TEXTO", help='Objetivo, p. ej. "Media maratón en menos de 2 horas"')
+    prof.add_argument("--goal-date", type=date.fromisoformat, metavar="AAAA-MM-DD", help="Fecha del objetivo")
+    prof.add_argument("--days", type=int, dest="weekly_days", metavar="N", help="Días por semana que puedes entrenar")
+    prof.add_argument("--notes", metavar="TEXTO", help="Lesiones, disponibilidad, preferencias...")
     return parser
 
 
@@ -42,13 +54,22 @@ def filters_from_args(args: argparse.Namespace) -> ImportFilters:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "init-db":
+            with db.connect() as conn:
+                db.init_schema(conn)
+            print("Base de datos lista.")
+            return 0
         if args.command == "import":
             return _run_import(args)
         if args.command == "weeks":
             return _run_weeks(args)
+        if args.command == "profile":
+            return _run_profile(args)
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
+    except psycopg.errors.CheckViolation as exc:
+        print(f"Valor no válido: {exc.diag.message_primary}", file=sys.stderr)
     return 1
 
 
@@ -91,3 +112,28 @@ def _run_weeks(args: argparse.Namespace) -> int:
     if partial_hr:
         print("* FC media solo de las carreras con pulsómetro de esa semana")
     return 0
+
+
+PROFILE_LABELS = {
+    "max_hr": "FC máxima",
+    "resting_hr": "FC en reposo",
+    "sex": "Sexo",
+    "goal": "Objetivo",
+    "goal_date": "Fecha del objetivo",
+    "weekly_days": "Días por semana",
+    "notes": "Notas",
+}
+
+
+def _run_profile(args: argparse.Namespace) -> int:
+    changes = {name: getattr(args, name) for name in PROFILE_LABELS if getattr(args, name) is not None}
+    with db.connect() as conn:
+        profile = update_profile(conn, **changes) if changes else get_profile(conn)
+    _print_profile(profile)
+    return 0
+
+
+def _print_profile(profile: AthleteProfile) -> None:
+    for name, label in PROFILE_LABELS.items():
+        value = getattr(profile, name)
+        print(f"  {label + ':':<20} {value if value is not None else '(sin configurar)'}")
