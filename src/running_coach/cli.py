@@ -107,21 +107,21 @@ def _run_import(args: argparse.Namespace) -> int:
         print(f"    {error}")
     return 1 if summary.errors else 0
 
-
 def _run_weeks(args: argparse.Namespace) -> int:
     with db.connect() as conn:
         weeks = weekly_summary(conn, args.weeks)
 
-    print(f"{'Semana':<12}{'Carreras':>9}{'Km':>8}{'Tiempo':>10}{'Ritmo':>11}{'Larga':>8}{'FC':>7}")
+    print(f"{'Semana':<12}{'Días':>5}{'Carreras':>9}{'Km':>8}{'Tiempo':>10}{'Ritmo':>11}{'Larga':>8}{'FC':>7}")
     partial_hr = False
     for w in weeks:
         hr = "-" if w.avg_hr is None else f"{w.avg_hr:.0f}"
         if w.avg_hr is not None and w.runs_with_hr < w.runs:
             hr += "*"
             partial_hr = True
-        print(f"{w.week_start.isoformat():<12}{w.runs:>9}{w.distance_m / 1000:>8.1f}"
+        current = "  (en curso)" if w.is_current else ""
+        print(f"{w.week_start.isoformat():<12}{w.sessions:>5}{w.runs:>9}{w.distance_m / 1000:>8.1f}"
               f"{format_duration(w.moving_time_s):>10}{format_pace(w.pace_s_per_km):>11}"
-              f"{w.longest_run_m / 1000:>8.1f}{hr:>7}")
+              f"{w.longest_run_m / 1000:>8.1f}{hr:>7}{current}")
     if partial_hr:
         print("* FC media solo de las carreras con pulsómetro de esa semana")
     return 0

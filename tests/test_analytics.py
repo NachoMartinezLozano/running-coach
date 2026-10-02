@@ -109,3 +109,19 @@ def test_intensity_distribution_ignores_older_runs(conn):
     result = analytics.intensity_distribution(conn, hr_zones(190, 57), weeks=1, tz=TZ, today=TODAY)
 
     assert result.measured_s == 0
+
+def test_current_week_is_marked(conn):
+    weeks = analytics.weekly_summary(conn, weeks=2, tz=TZ, today=TODAY)
+
+    assert [w.is_current for w in weeks] == [False, True]
+
+
+def test_warmup_and_run_on_the_same_day_are_one_session(conn):
+    add_run(conn, utc(2026, 9, 22, 19, 27), km=1.2, minutes=8)   # calentamiento
+    add_run(conn, utc(2026, 9, 22, 19, 48), km=9.9, minutes=59)  # carrera
+    add_run(conn, utc(2026, 9, 24, 18), km=5, minutes=30)
+
+    week = analytics.weekly_summary(conn, weeks=1, tz=TZ, today=TODAY)[0]
+
+    assert week.runs == 3
+    assert week.sessions == 2
