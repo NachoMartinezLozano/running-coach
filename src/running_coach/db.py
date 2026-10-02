@@ -121,3 +121,18 @@ def update_profile(conn: psycopg.Connection, **fields) -> AthleteProfile:
     params = {name: fields.get(name) for name in PROFILE_FIELDS}
     conn.execute(UPSERT_PROFILE, params)
     return get_profile(conn)
+
+SIMILAR_RUNS = """
+    SELECT id, start_time, distance_m
+    FROM activities
+    WHERE sport = 'running'
+      AND (start_time AT TIME ZONE %(tz)s)::date = %(day)s
+      AND abs(distance_m - %(distance_m)s) <= %(tolerance)s * %(distance_m)s
+"""
+
+
+def find_similar_runs(conn: psycopg.Connection, day, distance_m: float, tz: str,
+                      tolerance: float = 0.1) -> list[dict]:
+    """Carreras del mismo día (hora local) con una distancia parecida: posibles duplicados."""
+    return conn.execute(SIMILAR_RUNS, {"day": day, "distance_m": distance_m, "tz": tz,
+                                       "tolerance": tolerance}).fetchall()

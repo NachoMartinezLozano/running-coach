@@ -9,11 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import psycopg
+import uuid
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from running_coach import db, analytics
 from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
-from running_coach.models import AthleteProfile, Activity
+from running_coach.models import AthleteProfile, Activity, SESSION_TYPES
 from running_coach.metrics import HeartRateZone, hr_zones
 from running_coach.importers.files import parse_activity_file
 
@@ -69,3 +72,54 @@ def add_activity_file(conn: psycopg.Connection, path: Path) -> tuple[Activity, i
     activity = parse_activity_file(path, source="fit_upload")
     db.init_schema(conn)
     return activity, db.insert_activity(conn, activity)
+
+@dataclass
+class ManualRunResult:
+    activity: Activity | None  # None si no se guardó por posible duplicado
+    similar: list[dict]  # carreras parecidas que ya había ese día
+
+
+def log_manual_run(conn: psycopg.Connection, *, day: date, distance_km: float, duration_s: float,
+                   start: time | None = None, avg_hr: float | None = None, max_hr: int | None = None,
+                   elevation_gain_m: float | None = None, session_type: str | None = None,
+                   rpe: int | None = None, notes: str | None = None, force: bool = False,
+                   tz: str | None = None) -> ManualRunResult:
+    """Registra una carrera introducida a mano.
+
+    Si ese día ya hay una carrera de distancia parecida, no la guarda (salvo con force=True):
+    lo más probable es que sea la misma, añadida dos veces.
+    """
+    if distance_km <= 0:
+        raise ValueError("La distancia debe ser mayor que cero.")
+    if duration_s <= 0:
+        raise ValueError("La duración debe ser mayor que cero.")
+    if rpe is not None and not 1 <= rpe <= 10:
+        raise ValueError("El RPE debe estar entre 1 y 10.")
+    if session_type is not None and session_type not in SESSION_TYPES:
+        raise ValueError(f"Tipo de sesión no válido. Opciones: {', '.join(SESSION_TYPES)}")
+
+    tz = tz or timezone_name()
+    db.init_schema(conn)
+    similar = db.find_similar_runs(conn, day, distance_km * 1000, tz)
+    if similar and not force:
+        return ManualRunResult(activity=None, similar=similar)
+
+    # Sin hora, mediodía: así la carrera nunca cambia de día al convertirla a UTC
+    local_start = datetime.combine(day, start or time(12, 0), tzinfo=ZoneInfo(tz))
+    activity = Activity(
+        source="manual",
+        source_ref=f"manual:{uuid.uuid4()}",
+        start_time=local_start,
+        distance_m=distance_km * 1000,
+        duration_s=duration_s,
+        moving_time_s=duration_s,
+        avg_hr=avg_hr,
+        max_hr=max_hr,
+        elevation_gain_m=elevation_gain_m,
+        session_type=session_type,
+        rpe=rpe,
+        notes=notes,
+        device="Registro manual",
+    )
+    db.insert_activity(conn, activity)
+    return ManualRunResult(activity=activity, similar=similar)

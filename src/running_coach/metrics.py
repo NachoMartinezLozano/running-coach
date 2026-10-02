@@ -53,3 +53,22 @@ def hr_zones(max_hr: int, resting_hr: int | None = None) -> list[HeartRateZone]:
 def zone_index(heart_rate: float, zones: list[HeartRateZone]) -> int:
     """Posición (0 a 4) de la zona a la que pertenece una frecuencia cardíaca."""
     return bisect_right([zone.low_bpm for zone in zones[1:]], heart_rate)
+
+def parse_duration(text: str) -> float:
+    """Convierte '42:30', '1:02:05' o '45' (minutos) en segundos."""
+    parts = text.strip().split(":")
+    try:
+        numbers = [float(p) for p in parts]
+    except ValueError:
+        raise ValueError(f"Duración no válida: {text!r}. Usa mm:ss, h:mm:ss o minutos.") from None
+    if len(numbers) == 1:
+        seconds = numbers[0] * 60
+    elif len(numbers) == 2:
+        seconds = numbers[0] * 60 + numbers[1]
+    elif len(numbers) == 3:
+        seconds = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    else:
+        raise ValueError(f"Duración no válida: {text!r}. Usa mm:ss, h:mm:ss o minutos.")
+    if seconds <= 0 or any(n < 0 for n in numbers) or any(n >= 60 for n in numbers[1:]):
+        raise ValueError(f"Duración no válida: {text!r}.")
+    return seconds

@@ -4,6 +4,8 @@ independientemente de si viene de un .fit, un .gpx o un registro manual."""
 from dataclasses import dataclass, field
 from datetime import datetime, date
 
+# Tipos de sesión admitidos (los mismos que permite la base de datos)
+SESSION_TYPES = ("easy", "recovery", "long", "tempo", "intervals", "race", "warmup", "other")
 
 @dataclass
 class TrackPoint:

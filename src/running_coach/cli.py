@@ -4,19 +4,21 @@ import argparse
 import sys
 from datetime import date
 from pathlib import Path
+from datetime import date, time
 
 import psycopg
 
 from running_coach import db
 from running_coach.importers.strava_export import ImportFilters
-from running_coach.metrics import format_duration, format_pace
-from running_coach.models import AthleteProfile
+from running_coach.metrics import format_duration, format_pace, pace_s_per_km, parse_duration
+from running_coach.models import SESSION_TYPES, AthleteProfile
 from running_coach.service import (
     ProfileIncompleteError,
     add_activity_file,
     get_profile,
     import_strava_export_into_db,
     intensity_distribution,
+    log_manual_run,
     update_profile,
     weekly_summary,
 )
@@ -52,8 +54,28 @@ def build_parser() -> argparse.ArgumentParser:
     zones.add_argument("--weeks", type=int, default=12, help="Número de semanas (por defecto: 12)")
     add = commands.add_parser("add", help="Añade actividades desde archivos .fit, .gpx o .tcx")
     add.add_argument("files", type=Path, nargs="+", metavar="ARCHIVO", help="Uno o varios archivos de actividad")
+
+    log = commands.add_parser("log", help="Registra a mano una carrera")
+    log.add_argument("day", type=date.fromisoformat, metavar="FECHA", help="Fecha de la carrera (AAAA-MM-DD)")
+    log.add_argument("distance_km", type=float, metavar="KM", help="Distancia en kilómetros, p. ej. 7.2")
+    log.add_argument("duration_s", type=duration_arg, metavar="DURACIÓN", help="Tiempo: mm:ss o h:mm:ss")
+    log.add_argument("--time", type=time.fromisoformat, dest="start", metavar="HH:MM", help="Hora de inicio")
+    log.add_argument("--hr", type=float, dest="avg_hr", metavar="PPM", help="FC media")
+    log.add_argument("--max-hr", type=int, metavar="PPM", help="FC máxima")
+    log.add_argument("--elevation", type=float, dest="elevation_gain_m", metavar="METROS", help="Desnivel positivo")
+    log.add_argument("--type", choices=SESSION_TYPES, dest="session_type", help="Tipo de sesión")
+    log.add_argument("--rpe", type=int, choices=range(1, 11), metavar="1-10", help="Esfuerzo percibido (1-10)")
+    log.add_argument("--notes", metavar="TEXTO", help="Sensaciones, molestias, clima...")
+    log.add_argument("--force", action="store_true", help="Guardar aunque haya una carrera parecida ese día")
+
     return parser
 
+def duration_arg(text: str) -> float:
+    """Adapta parse_duration a argparse, para que muestre el error como cualquier otro argumento."""
+    try:
+        return parse_duration(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 def filters_from_args(args: argparse.Namespace) -> ImportFilters:
     return ImportFilters(
@@ -81,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_zones(args)
         if args.command == "add":
             return _run_add(args)
+        if args.command == "log":
+            return _run_log(args)
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
@@ -163,6 +187,28 @@ def _run_add(args: argparse.Namespace) -> int:
             print(f"  {status} {activity.start_time.astimezone():%Y-%m-%d %H:%M}  {activity.sport:<10}"
                   f"{activity.distance_m / 1000:6.2f} km  {format_duration(activity.moving_time_s or activity.duration_s)}")
     return 1 if errors else 0
+
+def _run_log(args: argparse.Namespace) -> int:
+    fields = {name: value for name, value in vars(args).items() if name != "command"}
+    try:
+        with db.connect() as conn:
+            result = log_manual_run(conn, **fields)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if result.activity is None:
+        print(f"No se ha guardado: ese día ya hay {len(result.similar)} carrera(s) de distancia parecida:")
+        for run in result.similar:
+            print(f"  id {run['id']}: {run['start_time'].astimezone():%Y-%m-%d %H:%M}  {run['distance_m'] / 1000:.2f} km")
+        print("Si es otra carrera distinta, repite el comando añadiendo --force.")
+        return 1
+
+    a = result.activity
+    pace = format_pace(pace_s_per_km(a.distance_m, a.duration_s))
+    print(f"Guardada: {a.start_time:%Y-%m-%d %H:%M}  {a.distance_m / 1000:.2f} km  "
+          f"{format_duration(a.duration_s)}  {pace}")
+    return 0
 
 def _zone_range(zone) -> str:
     if zone.high_bpm is None:

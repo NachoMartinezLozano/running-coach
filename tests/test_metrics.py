@@ -1,6 +1,7 @@
 """Tests de los cálculos y formatos de running."""
 
-from running_coach.metrics import format_duration, format_pace, pace_s_per_km, hr_zones, zone_index
+from running_coach.metrics import format_duration, format_pace, pace_s_per_km, hr_zones, zone_index, parse_duration
+import pytest
 
 
 def test_pace():
@@ -40,3 +41,11 @@ def test_zone_index():
     assert zone_index(165, zones) == 3  # Z4
     assert zone_index(200, zones) == 4  # por encima del máximo: sigue siendo Z5
     assert zone_index(zones[1].low_bpm, zones) == 1  # el límite inferior pertenece a la zona
+
+def test_parse_duration():
+    assert parse_duration("42:30") == 2550
+    assert parse_duration("1:02:05") == 3725
+    assert parse_duration("45") == 2700  # solo minutos
+    for bad in ("abc", "42:75", "-5", "0", "1:2:3:4"):
+        with pytest.raises(ValueError):
+            parse_duration(bad)

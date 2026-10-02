@@ -73,14 +73,24 @@ def weekly_summary(conn: psycopg.Connection, weeks: int, tz: str,
     rows = conn.execute(WEEKLY_SUMMARY, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
     return [WeekSummary(**row) for row in rows]
 
-SPLITS_IN_PERIOD = """
+HR_SEGMENTS_IN_PERIOD = """
+    WITH period AS (
+        SELECT date_trunc('week', COALESCE(%(today)s::date, (now() AT TIME ZONE %(tz)s)::date)::timestamp)::date
+                   - (%(weeks)s::int - 1) * 7 AS first_day
+    )
+    -- Los parciales de las carreras que los tienen...
     SELECT s.avg_hr, s.duration_s
     FROM splits s
     JOIN activities a ON a.id = s.activity_id
     WHERE a.sport = 'running'
-      AND (a.start_time AT TIME ZONE %(tz)s)::date >=
-          date_trunc('week', COALESCE(%(today)s::date, (now() AT TIME ZONE %(tz)s)::date)::timestamp)::date
-              - (%(weeks)s::int - 1) * 7
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >= (SELECT first_day FROM period)
+    UNION ALL
+    -- ...y las carreras sin parciales (registro manual), como un único tramo
+    SELECT a.avg_hr, COALESCE(a.moving_time_s, a.duration_s)
+    FROM activities a
+    WHERE a.sport = 'running'
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >= (SELECT first_day FROM period)
+      AND NOT EXISTS (SELECT 1 FROM splits s WHERE s.activity_id = a.id)
 """
 
 
@@ -101,7 +111,7 @@ def intensity_distribution(conn: psycopg.Connection, zones: list[HeartRateZone],
 
     Aproximación por kilómetro: cada parcial cuenta entero en la zona de su FC media.
     """
-    rows = conn.execute(SPLITS_IN_PERIOD, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
+    rows = conn.execute(HR_SEGMENTS_IN_PERIOD, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
     seconds = [0.0] * len(zones)
     unmeasured = 0.0
     for row in rows:
