@@ -123,3 +123,7 @@ def log_manual_run(conn: psycopg.Connection, *, day: date, distance_km: float, d
     )
     db.insert_activity(conn, activity)
     return ManualRunResult(activity=activity, similar=similar)
+
+def training_load(conn: psycopg.Connection, weeks: int = 8) -> analytics.TrainingLoad:
+    """Carga semanal y relación aguda/crónica, con las zonas del perfil del atleta."""
+    return analytics.training_load(conn, heart_rate_zones(conn), weeks, tz=timezone_name())

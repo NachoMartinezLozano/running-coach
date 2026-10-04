@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 # Límites entre zonas, como fracción de la FC de reserva (o de la FC máxima si no hay FC en reposo)
 ZONE_THRESHOLDS = (0.60, 0.70, 0.80, 0.90)
@@ -72,3 +73,36 @@ def parse_duration(text: str) -> float:
     if seconds <= 0 or any(n < 0 for n in numbers) or any(n >= 60 for n in numbers[1:]):
         raise ValueError(f"Duración no válida: {text!r}.")
     return seconds
+
+def week_start(day: date) -> date:
+    """Lunes de la semana de `day`."""
+    return day - timedelta(days=day.weekday())
+
+
+def period_start(today: date, weeks: int) -> date:
+    """Primer día (lunes) de las últimas `weeks` semanas, la actual incluida."""
+    return week_start(today) - timedelta(weeks=weeks - 1)
+
+
+def edwards_trimp(duration_s: float, heart_rate: float, zones: list[HeartRateZone]) -> float:
+    """TRIMP de Edwards: minutos multiplicados por el número de la zona (1 a 5)."""
+    return duration_s / 60 * zones[zone_index(heart_rate, zones)].number
+
+
+@dataclass(frozen=True)
+class LoadRatio:
+    """Carga de los últimos 7 días frente a la media semanal de los últimos 28."""
+
+    acute: float  # últimos 7 días
+    chronic: float  # media semanal de los últimos 28 días
+
+    @property
+    def ratio(self) -> float | None:
+        return self.acute / self.chronic if self.chronic else None
+
+
+def acute_chronic(daily: dict[date, float], today: date) -> LoadRatio:
+    """Relación aguda/crónica a partir de la carga de cada día."""
+    acute = sum(v for d, v in daily.items() if today - timedelta(days=6) <= d <= today)
+    last_28 = sum(v for d, v in daily.items() if today - timedelta(days=27) <= d <= today)
+    return LoadRatio(acute=acute, chronic=last_28 / 4)

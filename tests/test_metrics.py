@@ -1,6 +1,7 @@
 """Tests de los cálculos y formatos de running."""
 
-from running_coach.metrics import format_duration, format_pace, pace_s_per_km, hr_zones, zone_index, parse_duration
+from datetime import date, timedelta
+from running_coach.metrics import format_duration, format_pace, pace_s_per_km, hr_zones, zone_index, parse_duration, LoadRatio, acute_chronic, edwards_trimp, period_start, week_start
 import pytest
 
 
@@ -49,3 +50,36 @@ def test_parse_duration():
     for bad in ("abc", "42:75", "-5", "0", "1:2:3:4"):
         with pytest.raises(ValueError):
             parse_duration(bad)
+
+def test_edwards_trimp():
+    zones = hr_zones(190, 57)
+
+    assert edwards_trimp(1800, 165, zones) == 120  # 30 min en Z4
+    assert edwards_trimp(1800, 140, zones) == 60   # 30 min en Z2
+
+
+def test_week_and_period_start():
+    assert week_start(date(2026, 10, 2)) == date(2026, 9, 28)  # viernes -> su lunes
+    assert period_start(date(2026, 10, 2), weeks=4) == date(2026, 9, 7)
+
+
+def test_acute_chronic():
+    today = date(2026, 10, 2)
+    daily = {
+        today: 10,                         # dentro de los 7 días
+        today - timedelta(days=10): 30,    # solo en los 28 días
+        today - timedelta(days=40): 99,    # fuera de las dos ventanas
+    }
+
+    load = acute_chronic(daily, today)
+
+    assert (load.acute, load.chronic, load.ratio) == (10, 10, 1)
+    assert acute_chronic({}, today).ratio is None
+
+
+def test_acute_window_is_seven_days_including_today():
+    today = date(2026, 10, 2)
+
+    load = acute_chronic({today - timedelta(days=6): 5, today - timedelta(days=7): 7}, today)
+
+    assert load.acute == 5

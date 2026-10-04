@@ -1,11 +1,30 @@
 """Consultas de análisis sobre las actividades guardadas."""
 
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg
 
-from running_coach.metrics import HeartRateZone, pace_s_per_km, zone_index
+from running_coach.metrics import (
+    HeartRateZone,
+    LoadRatio,
+    acute_chronic,
+    edwards_trimp,
+    pace_s_per_km,
+    period_start,
+    week_start,
+    zone_index,
+)
+
+
+def local_today(tz: str) -> date:
+    """La fecha de hoy en la zona horaria del atleta."""
+    return datetime.now(ZoneInfo(tz)).date()
+
+
+# ---------- Resumen semanal ----------
 
 WEEKLY_SUMMARY = """
     WITH today AS (
@@ -50,12 +69,13 @@ WEEKLY_SUMMARY = """
     ORDER BY w.week_start
 """
 
+
 @dataclass
 class WeekSummary:
     week_start: date  # lunes de la semana
-    is_current: bool
-    runs: int
-    sessions: int
+    is_current: bool  # la semana de hoy: aún no ha terminado
+    runs: int  # actividades
+    sessions: int  # días distintos con carrera (calentamiento + carrera = una sesión)
     distance_m: float
     moving_time_s: float
     longest_run_m: float
@@ -73,32 +93,49 @@ def weekly_summary(conn: psycopg.Connection, weeks: int, tz: str,
     rows = conn.execute(WEEKLY_SUMMARY, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
     return [WeekSummary(**row) for row in rows]
 
-HR_SEGMENTS_IN_PERIOD = """
-    WITH period AS (
-        SELECT date_trunc('week', COALESCE(%(today)s::date, (now() AT TIME ZONE %(tz)s)::date)::timestamp)::date
-                   - (%(weeks)s::int - 1) * 7 AS first_day
-    )
+
+# ---------- Tramos con pulsaciones: base de las zonas y de la carga ----------
+
+HR_SEGMENTS = """
     -- Los parciales de las carreras que los tienen...
-    SELECT s.avg_hr, s.duration_s
+    SELECT (a.start_time AT TIME ZONE %(tz)s)::date AS day, s.avg_hr, s.duration_s, s.distance_m
     FROM splits s
     JOIN activities a ON a.id = s.activity_id
     WHERE a.sport = 'running'
-      AND (a.start_time AT TIME ZONE %(tz)s)::date >= (SELECT first_day FROM period)
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >= %(first_day)s
     UNION ALL
     -- ...y las carreras sin parciales (registro manual), como un único tramo
-    SELECT a.avg_hr, COALESCE(a.moving_time_s, a.duration_s)
+    SELECT (a.start_time AT TIME ZONE %(tz)s)::date, a.avg_hr,
+           COALESCE(a.moving_time_s, a.duration_s), a.distance_m
     FROM activities a
     WHERE a.sport = 'running'
-      AND (a.start_time AT TIME ZONE %(tz)s)::date >= (SELECT first_day FROM period)
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >= %(first_day)s
       AND NOT EXISTS (SELECT 1 FROM splits s WHERE s.activity_id = a.id)
 """
 
 
 @dataclass
+class Segment:
+    """Un tramo de carrera: un parcial, o una carrera entera si no tiene parciales."""
+
+    day: date  # día local
+    avg_hr: float | None
+    duration_s: float
+    distance_m: float
+
+
+def hr_segments(conn: psycopg.Connection, first_day: date, tz: str) -> list[Segment]:
+    rows = conn.execute(HR_SEGMENTS, {"first_day": first_day, "tz": tz}).fetchall()
+    return [Segment(**row) for row in rows]
+
+
+# ---------- Zonas de pulsaciones ----------
+
+@dataclass
 class IntensityDistribution:
     zones: list[HeartRateZone]
     seconds_in_zone: list[float]  # una posición por zona
-    unmeasured_s: float  # tiempo de parciales sin pulsaciones (carreras con el móvil)
+    unmeasured_s: float  # tiempo sin pulsaciones (carreras con el móvil o registradas sin FC)
 
     @property
     def measured_s(self) -> float:
@@ -110,13 +147,68 @@ def intensity_distribution(conn: psycopg.Connection, zones: list[HeartRateZone],
     """Tiempo en cada zona durante las últimas `weeks` semanas.
 
     Aproximación por kilómetro: cada parcial cuenta entero en la zona de su FC media.
+    Las carreras registradas a mano, sin parciales, cuentan enteras en la zona de su FC media.
     """
-    rows = conn.execute(HR_SEGMENTS_IN_PERIOD, {"weeks": weeks, "tz": tz, "today": today}).fetchall()
+    today = today or local_today(tz)
     seconds = [0.0] * len(zones)
     unmeasured = 0.0
-    for row in rows:
-        if row["avg_hr"] is None:
-            unmeasured += row["duration_s"]
+    for segment in hr_segments(conn, period_start(today, weeks), tz):
+        if segment.avg_hr is None:
+            unmeasured += segment.duration_s
         else:
-            seconds[zone_index(row["avg_hr"], zones)] += row["duration_s"]
+            seconds[zone_index(segment.avg_hr, zones)] += segment.duration_s
     return IntensityDistribution(zones, seconds, unmeasured)
+
+
+# ---------- Carga de entrenamiento ----------
+
+@dataclass
+class WeekLoad:
+    week_start: date
+    is_current: bool
+    trimp: float  # carga (TRIMP de Edwards) de los tramos con pulsaciones
+    distance_m: float
+    unmeasured_s: float  # tiempo sin pulsaciones: no suma carga
+
+
+@dataclass
+class TrainingLoad:
+    weeks: list[WeekLoad]
+    trimp: LoadRatio  # relación aguda/crónica de la carga
+    distance: LoadRatio  # relación aguda/crónica de los kilómetros
+
+
+def training_load(conn: psycopg.Connection, zones: list[HeartRateZone], weeks: int, tz: str,
+                  today: date | None = None) -> TrainingLoad:
+    """Carga semanal y relación aguda/crónica (últimos 7 días frente a la media de 28)."""
+    today = today or local_today(tz)
+    first_week = period_start(today, weeks)
+    # La relación aguda/crónica necesita los últimos 28 días, aunque se pidan menos semanas
+    first_day = min(first_week, today - timedelta(days=27))
+
+    daily_trimp: dict[date, float] = defaultdict(float)
+    daily_distance: dict[date, float] = defaultdict(float)
+    unmeasured_by_week: dict[date, float] = defaultdict(float)
+    for s in hr_segments(conn, first_day, tz):
+        if s.day > today:
+            continue
+        daily_distance[s.day] += s.distance_m
+        if s.avg_hr is None:
+            unmeasured_by_week[week_start(s.day)] += s.duration_s
+        else:
+            daily_trimp[s.day] += edwards_trimp(s.duration_s, s.avg_hr, zones)
+
+    week_list = []
+    for i in range(weeks):
+        monday = first_week + timedelta(weeks=i)
+        days = [monday + timedelta(days=d) for d in range(7)]
+        week_list.append(WeekLoad(
+            week_start=monday,
+            is_current=monday == week_start(today),
+            trimp=sum(daily_trimp.get(d, 0.0) for d in days),
+            distance_m=sum(daily_distance.get(d, 0.0) for d in days),
+            unmeasured_s=unmeasured_by_week.get(monday, 0.0),
+        ))
+    return TrainingLoad(weeks=week_list,
+                        trimp=acute_chronic(daily_trimp, today),
+                        distance=acute_chronic(daily_distance, today))

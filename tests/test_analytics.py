@@ -125,3 +125,24 @@ def test_warmup_and_run_on_the_same_day_are_one_session(conn):
 
     assert week.runs == 3
     assert week.sessions == 2
+
+def test_training_load(conn):
+    run = Activity(source="manual", source_ref="carga", start_time=utc(2026, 9, 22, 18),
+                   distance_m=2000, duration_s=720, moving_time_s=720)
+    run.splits = [
+        Split(index=1, distance_m=1000, duration_s=360, avg_hr=165),   # 6 min en Z4: carga 24
+        Split(index=2, distance_m=1000, duration_s=360, avg_hr=None),  # sin pulsómetro: no suma
+    ]
+    db.insert_activity(conn, run)
+    # Fuera de las 2 semanas de la tabla, pero dentro de los 28 días: 30 min en Z2, carga 60
+    add_run(conn, utc(2026, 9, 10, 18), km=5, minutes=30, hr=140)
+
+    report = analytics.training_load(conn, hr_zones(190, 57), weeks=2, tz=TZ, today=TODAY)
+
+    current = report.weeks[-1]
+    assert current.is_current
+    assert current.trimp == pytest.approx(24)
+    assert current.distance_m == 2000
+    assert current.unmeasured_s == 360
+    assert report.trimp.acute == pytest.approx(24)
+    assert report.trimp.chronic == pytest.approx((24 + 60) / 4)

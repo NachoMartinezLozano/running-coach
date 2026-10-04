@@ -19,6 +19,7 @@ from running_coach.service import (
     import_strava_export_into_db,
     intensity_distribution,
     log_manual_run,
+    training_load,
     update_profile,
     weekly_summary,
 )
@@ -68,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     log.add_argument("--notes", metavar="TEXTO", help="Sensaciones, molestias, clima...")
     log.add_argument("--force", action="store_true", help="Guardar aunque haya una carrera parecida ese día")
 
+    load = commands.add_parser("load", help="Carga de entrenamiento semanal")
+    load.add_argument("--weeks", type=int, default=8, help="Número de semanas (por defecto: 8)")
+
     return parser
 
 def duration_arg(text: str) -> float:
@@ -105,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_add(args)
         if args.command == "log":
             return _run_log(args)
+        if args.command == "load":
+            return _run_load(args)
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
@@ -241,3 +247,26 @@ def _print_profile(profile: AthleteProfile) -> None:
         value = getattr(profile, name)
         print(f"  {label + ':':<20} {value if value is not None else '(sin configurar)'}")
 
+def _run_load(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        report = training_load(conn, args.weeks)
+
+    print(f"Carga de entrenamiento (TRIMP de Edwards), últimas {args.weeks} semanas\n")
+    print(f"{'Semana':<12}{'Km':>7}{'Carga':>8}{'Sin FC':>9}")
+    for w in report.weeks:
+        unmeasured = format_duration(w.unmeasured_s) if w.unmeasured_s else "-"
+        current = "  (en curso)" if w.is_current else ""
+        print(f"{w.week_start.isoformat():<12}{w.distance_m / 1000:>7.1f}{w.trimp:>8.0f}{unmeasured:>9}{current}")
+
+    print("\nÚltimos 7 días frente a la media semanal de los últimos 28 días:")
+    _print_ratio("Kilómetros", report.distance, scale=1000, unit=" km")
+    _print_ratio("Carga", report.trimp)
+    print("Referencia orientativa: entre 0,8 y 1,3 es una progresión habitual; "
+          "por encima de 1,5, una subida brusca.")
+    return 0
+
+
+def _print_ratio(label: str, load, scale: float = 1, unit: str = "") -> None:
+    ratio = "-" if load.ratio is None else f"{load.ratio:.2f}"
+    print(f"  {label + ':':<12}{load.acute / scale:6.1f}{unit} frente a "
+          f"{load.chronic / scale:.1f}{unit}/semana  ->  ratio {ratio}")
