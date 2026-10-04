@@ -212,3 +212,51 @@ def training_load(conn: psycopg.Connection, zones: list[HeartRateZone], weeks: i
     return TrainingLoad(weeks=week_list,
                         trimp=acute_chronic(daily_trimp, today),
                         distance=acute_chronic(daily_distance, today))
+
+# ---------- Carreras recientes ----------
+
+RECENT_RUNS = """
+    SELECT a.id,
+           a.start_time AT TIME ZONE %(tz)s AS local_start,
+           a.device,
+           a.distance_m,
+           COALESCE(a.moving_time_s, a.duration_s) AS moving_time_s,
+           a.avg_hr,
+           a.max_hr,
+           a.elevation_gain_m,
+           a.session_type,
+           a.rpe,
+           a.notes,
+           (SELECT count(*) FROM splits s WHERE s.activity_id = a.id) AS splits
+    FROM activities a
+    WHERE a.sport = 'running'
+      AND (a.start_time AT TIME ZONE %(tz)s)::date >= %(first_day)s
+    ORDER BY a.start_time DESC
+"""
+
+
+@dataclass
+class RunSummary:
+    id: int
+    local_start: datetime  # hora local del atleta, sin zona horaria
+    device: str | None
+    distance_m: float
+    moving_time_s: float
+    avg_hr: float | None
+    max_hr: int | None
+    elevation_gain_m: float | None
+    session_type: str | None
+    rpe: int | None
+    notes: str | None
+    splits: int  # número de parciales por km (0 en los registros manuales)
+
+    @property
+    def pace_s_per_km(self) -> float | None:
+        return pace_s_per_km(self.distance_m, self.moving_time_s)
+
+
+def recent_runs(conn: psycopg.Connection, weeks: int, tz: str, today: date | None = None) -> list[RunSummary]:
+    """Carreras de las últimas `weeks` semanas, de la más reciente a la más antigua."""
+    today = today or local_today(tz)
+    rows = conn.execute(RECENT_RUNS, {"first_day": period_start(today, weeks), "tz": tz}).fetchall()
+    return [RunSummary(**row) for row in rows]

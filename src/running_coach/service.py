@@ -127,3 +127,12 @@ def log_manual_run(conn: psycopg.Connection, *, day: date, distance_km: float, d
 def training_load(conn: psycopg.Connection, weeks: int = 8) -> analytics.TrainingLoad:
     """Carga semanal y relación aguda/crónica, con las zonas del perfil del atleta."""
     return analytics.training_load(conn, heart_rate_zones(conn), weeks, tz=timezone_name())
+
+def today() -> date:
+    """La fecha de hoy en la zona horaria del atleta."""
+    return analytics.local_today(timezone_name())
+
+
+def recent_runs(conn: psycopg.Connection, weeks: int = 4) -> list[analytics.RunSummary]:
+    """Carreras de las últimas semanas, de la más reciente a la más antigua."""
+    return analytics.recent_runs(conn, weeks, tz=timezone_name())

@@ -146,3 +146,15 @@ def test_training_load(conn):
     assert current.unmeasured_s == 360
     assert report.trimp.acute == pytest.approx(24)
     assert report.trimp.chronic == pytest.approx((24 + 60) / 4)
+
+def test_recent_runs_newest_first(conn):
+    add_run(conn, utc(2026, 9, 22, 18), km=5, minutes=30)
+    add_run(conn, utc(2026, 9, 24, 18), km=6, minutes=36, hr=150)
+    add_run(conn, utc(2026, 9, 1, 18), km=7, minutes=40)                 # fuera del periodo
+    add_run(conn, utc(2026, 9, 23, 18), km=20, minutes=60, sport="cycling")
+
+    runs = analytics.recent_runs(conn, weeks=1, tz=TZ, today=TODAY)
+
+    assert [r.distance_m for r in runs] == [6000, 5000]
+    assert runs[0].local_start == datetime(2026, 9, 24, 20, 0)  # 18:00 UTC = 20:00 en Madrid
+    assert runs[0].splits == 0
