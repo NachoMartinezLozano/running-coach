@@ -5,16 +5,20 @@ hablan Claude y el servidor. Por eso aquí nunca se usa print(): cualquier texto
 en stdout rompería la comunicación. Los mensajes de diagnóstico van con logging,
 que escribe en stderr.
 """
-
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date, time
+from typing import Literal
+from zoneinfo import ZoneInfo
 
 import psycopg
 from mcp.server import MCPServer
 
 from running_coach import db, service
-from running_coach.metrics import HeartRateZone, format_duration, format_pace
+from running_coach.config import timezone_name
+from running_coach.metrics import HeartRateZone, format_duration, format_pace, pace_s_per_km, parse_duration
+from running_coach.models import SESSION_TYPES, Activity
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +176,82 @@ def recent_runs_payload(conn: psycopg.Connection, weeks: int) -> dict:
         ],
     }
 
+def _local(dt) -> str:
+    """Fecha y hora en la zona horaria del atleta, como texto."""
+    return dt.astimezone(ZoneInfo(timezone_name())).strftime("%Y-%m-%d %H:%M")
+
+
+def _saved_run_payload(a: Activity) -> dict:
+    return {
+        "id": a.id,
+        "start": _local(a.start_time),
+        "distance_km": round(a.distance_m / 1000, 2),
+        "moving_time": format_duration(a.duration_s),
+        "pace": format_pace(pace_s_per_km(a.distance_m, a.duration_s)),
+        "avg_hr": a.avg_hr,
+        "max_hr": a.max_hr,
+        "session_type": a.session_type,
+        "rpe": a.rpe,
+        "notes": a.notes,
+    }
+
+
+def _parse_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"Fecha no válida: {text!r}. Usa el formato AAAA-MM-DD.") from None
+
+
+def _parse_time(text: str) -> time:
+    try:
+        return time.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"Hora no válida: {text!r}. Usa el formato HH:MM.") from None
+
+
+def log_run_payload(conn: psycopg.Connection, *, run_date: str, distance_km: float, duration: str,
+                    start_time: str | None = None, avg_hr: float | None = None, max_hr: int | None = None,
+                    elevation_gain_m: float | None = None, session_type: str | None = None,
+                    rpe: int | None = None, notes: str | None = None, force: bool = False) -> dict:
+    """Convierte los datos tal como los da Claude (texto) en tipos de Python y registra la carrera."""
+    result = service.log_manual_run(
+        conn,
+        day=_parse_date(run_date),
+        distance_km=distance_km,
+        duration_s=parse_duration(duration),
+        start=_parse_time(start_time) if start_time else None,
+        avg_hr=avg_hr,
+        max_hr=max_hr,
+        elevation_gain_m=elevation_gain_m,
+        session_type=session_type,
+        rpe=rpe,
+        notes=notes,
+        force=force,
+    )
+    if result.activity is None:
+        return {
+            "saved": False,
+            "reason": "Ese día ya hay una carrera de distancia parecida; probablemente sea la misma.",
+            "similar_runs": [
+                {"id": r["id"], "start": _local(r["start_time"]), "distance_km": round(r["distance_m"] / 1000, 2)}
+                for r in result.similar
+            ],
+            "next_step": "Pregunta al usuario si es una carrera distinta. Solo si lo confirma, "
+                         "vuelve a llamar a log_run con force=true.",
+        }
+    return {"saved": True, "run": _saved_run_payload(result.activity)}
+
+
+def delete_run_payload(conn: psycopg.Connection, run_id: int) -> dict:
+    deleted = service.delete_run(conn, run_id)
+    if deleted is None:
+        return {"deleted": False, "reason": f"No existe ninguna carrera con id {run_id}."}
+    return {
+        "deleted": True,
+        "run": {"id": deleted["id"], "start": _local(deleted["start_time"]),
+                "distance_km": round(deleted["distance_m"] / 1000, 2)},
+    }
 
 # ---------- Herramientas MCP ----------
 
@@ -189,6 +269,9 @@ def _connection() -> Iterator[psycopg.Connection]:
             yield conn
     except service.ProfileIncompleteError as exc:
         raise RuntimeError(f"{exc} Pide al usuario su FC máxima y en reposo.") from exc
+    except ValueError as exc:
+        # Datos no válidos (fecha mal escrita, RPE fuera de rango...): Claude puede corregirlos
+        raise ValueError(f"Datos no válidos: {exc}") from exc
 
 
 @mcp.tool()
@@ -231,6 +314,45 @@ def list_recent_runs(weeks: int = 4) -> dict:
     with _connection() as conn:
         return recent_runs_payload(conn, weeks)
 
+@mcp.tool()
+def log_run(run_date: str, distance_km: float, duration: str, start_time: str | None = None,
+            avg_hr: float | None = None, max_hr: int | None = None, elevation_gain_m: float | None = None,
+            session_type: Literal[SESSION_TYPES] | None = None, rpe: int | None = None,
+            notes: str | None = None, force: bool = False) -> dict:
+    """Registra una carrera que el usuario te cuenta en la conversación.
+
+    Args:
+        run_date: fecha en formato AAAA-MM-DD. Si el usuario dice "hoy" o "ayer", calcúlala a partir
+            del campo "today" de get_athlete_profile.
+        distance_km: distancia en kilómetros, p. ej. 7.2.
+        duration: tiempo total como "mm:ss" o "h:mm:ss", p. ej. "42:30".
+        start_time: hora de inicio "HH:MM", si la sabe.
+        avg_hr: frecuencia cardíaca media, si la sabe.
+        max_hr: frecuencia cardíaca máxima, si la sabe.
+        elevation_gain_m: desnivel positivo en metros, si lo sabe.
+        session_type: tipo de sesión, si queda claro por lo que cuenta.
+        rpe: esfuerzo percibido de 1 (muy suave) a 10 (máximo).
+        notes: sensaciones, molestias, clima... con las palabras del usuario.
+        force: guardar aunque ese día ya haya una carrera parecida. Úsalo solo si el usuario
+            confirma que es una carrera distinta.
+
+    Necesitas como mínimo la fecha, la distancia y la duración. Si el usuario no menciona la FC media
+    ni el RPE, pregúntaselos una vez, porque mejoran mucho el análisis, pero no insistas.
+    Antes de guardar, resume los datos que vas a registrar.
+    """
+    with _connection() as conn:
+        return log_run_payload(conn, run_date=run_date, distance_km=distance_km, duration=duration,
+                               start_time=start_time, avg_hr=avg_hr, max_hr=max_hr,
+                               elevation_gain_m=elevation_gain_m, session_type=session_type,
+                               rpe=rpe, notes=notes, force=force)
+
+
+@mcp.tool()
+def delete_run(run_id: int) -> dict:
+    """Borra una carrera por su id (lo ves en list_recent_runs). Úsalo solo cuando el usuario
+    pida explícitamente borrar o corregir una carrera, y confirma antes cuál es."""
+    with _connection() as conn:
+        return delete_run_payload(conn, run_id)
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)  # por defecto escribe en stderr

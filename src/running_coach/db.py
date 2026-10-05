@@ -136,3 +136,10 @@ def find_similar_runs(conn: psycopg.Connection, day, distance_m: float, tz: str,
     """Carreras del mismo día (hora local) con una distancia parecida: posibles duplicados."""
     return conn.execute(SIMILAR_RUNS, {"day": day, "distance_m": distance_m, "tz": tz,
                                        "tolerance": tolerance}).fetchall()
+
+def delete_activity(conn: psycopg.Connection, activity_id: int) -> dict | None:
+    """Borra una actividad (y sus parciales, por el ON DELETE CASCADE). Devuelve lo borrado o None."""
+    return conn.execute(
+        "DELETE FROM activities WHERE id = %s RETURNING id, start_time, distance_m",
+        (activity_id,),
+    ).fetchone()

@@ -136,3 +136,7 @@ def today() -> date:
 def recent_runs(conn: psycopg.Connection, weeks: int = 4) -> list[analytics.RunSummary]:
     """Carreras de las últimas semanas, de la más reciente a la más antigua."""
     return analytics.recent_runs(conn, weeks, tz=timezone_name())
+
+def delete_run(conn: psycopg.Connection, run_id: int) -> dict | None:
+    """Borra una carrera por su id. Devuelve sus datos básicos, o None si no existía."""
+    return db.delete_activity(conn, run_id)
