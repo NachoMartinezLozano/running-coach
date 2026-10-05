@@ -178,6 +178,8 @@ La ruta de `uv` se obtiene con `which uv` (macOS y Linux) o `(Get-Command uv).So
 | `get_intensity_distribution` | Tiempo y porcentaje en cada zona de pulsaciones |
 | `get_training_load` | Carga semanal y relación aguda/crónica de carga y kilómetros |
 | `list_recent_runs` | Carreras recientes con ritmo, pulsaciones, RPE y notas |
+| `log_run` | Registra una carrera contada en la conversación, con detección de posibles duplicados |
+| `delete_run` | Borra una carrera, para corregir errores |
 
 Ejemplo de uso en Claude Desktop:
 
@@ -238,7 +240,8 @@ Los datos de actividad contienen ubicaciones y horarios. La carpeta `data/`, los
 - [x] Métricas: resumen semanal, zonas de pulsaciones y carga
 - [x] Registro de carreras desde la línea de comandos
 - [x] Servidor MCP con herramientas de análisis
-- [ ] Herramientas de escritura en el servidor MCP: registrar carreras, detalle por kilómetros y perfil desde la conversación
+- [x] Registro y borrado de carreras desde la conversación con Claude
+- [ ] Detalle por kilómetros de una carrera y edición del perfil desde la conversación
 - [ ] Planes de entrenamiento persistentes: sesiones planificadas frente a realizadas
 - [ ] Migraciones del esquema (Alembic)
 - [ ] Integración continua con GitHub Actions
