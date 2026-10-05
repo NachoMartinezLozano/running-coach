@@ -192,12 +192,18 @@ def get_active_plan(conn: psycopg.Connection) -> TrainingPlan | None:
     return TrainingPlan(**row, sessions=[PlannedSession(**s) for s in sessions])
 
 
-def replace_sessions_from(conn: psycopg.Connection, plan_id: int, from_day,
-                          sessions: list[PlannedSession]) -> int:
-    """Sustituye las sesiones del plan a partir de `from_day` (incluido). Devuelve cuántas se borraron."""
+def replace_sessions(conn: psycopg.Connection, plan_id: int, from_day, to_day,
+                     sessions: list[PlannedSession]) -> int:
+    """Sustituye las sesiones del plan entre `from_day` y `to_day` (incluidos; sin `to_day`, hasta el final).
+
+    Devuelve cuántas sesiones se borraron.
+    """
     with conn.transaction():
-        deleted = conn.execute("DELETE FROM planned_sessions WHERE plan_id = %s AND day >= %s",
-                               (plan_id, from_day)).rowcount
+        deleted = conn.execute(
+            "DELETE FROM planned_sessions WHERE plan_id = %(plan_id)s AND day >= %(from_day)s "
+            "AND (%(to_day)s::date IS NULL OR day <= %(to_day)s)",
+            {"plan_id": plan_id, "from_day": from_day, "to_day": to_day},
+        ).rowcount
         _insert_sessions(conn, plan_id, sessions)
     return deleted
 

@@ -166,13 +166,20 @@ def save_training_plan(conn: psycopg.Connection, plan: TrainingPlan) -> Training
     return plan
 
 
-def replan_from(conn: psycopg.Connection, from_day: date, sessions: list[PlannedSession]) -> TrainingPlan:
-    """Sustituye las sesiones del plan activo a partir de una fecha. Las anteriores no se tocan."""
+def replan(conn: psycopg.Connection, from_day: date, sessions: list[PlannedSession],
+           to_day: date | None = None) -> TrainingPlan:
+    """Sustituye las sesiones del plan activo entre dos fechas (sin `to_day`, hasta el final del plan).
+
+    Las sesiones fuera de ese rango no se tocan: el pasado se conserva.
+    """
     plan = db.get_active_plan(conn)
     if plan is None:
         raise ValueError("No hay ningún plan activo.")
-    _validate_sessions(sessions, max(from_day, plan.start_date), plan.end_date)
-    db.replace_sessions_from(conn, plan.id, from_day, sessions)
+    last_day = min(to_day, plan.end_date) if to_day else plan.end_date
+    if last_day < from_day:
+        raise ValueError("La fecha final del cambio es anterior a la inicial.")
+    _validate_sessions(sessions, max(from_day, plan.start_date), last_day)
+    db.replace_sessions(conn, plan.id, from_day, to_day, sessions)
     return db.get_active_plan(conn)
 
 

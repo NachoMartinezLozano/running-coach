@@ -72,7 +72,7 @@ def test_sessions_outside_the_plan_are_rejected(conn):
 def test_replan_keeps_past_sessions(conn):
     service.save_training_plan(conn, make_plan())
 
-    plan = service.replan_from(conn, date(2026, 10, 8), [
+    plan = service.replan(conn, date(2026, 10, 8), [
         PlannedSession(day=date(2026, 10, 9), session_type="tempo", description="Tempo 20 min"),
     ])
 
@@ -81,6 +81,19 @@ def test_replan_keeps_past_sessions(conn):
         (date(2026, 10, 9), "tempo"),  # nueva
     ]
 
+
+def test_replan_changes_only_the_given_range(conn):
+    service.save_training_plan(conn, make_plan())
+
+    plan = service.replan(conn, date(2026, 10, 7), [
+        PlannedSession(day=date(2026, 10, 9), session_type="tempo", description="Tempo 20 min"),
+    ], to_day=date(2026, 10, 9))
+
+    assert [(s.day, s.session_type) for s in plan.sessions] == [
+        (date(2026, 10, 6), "easy"),   # antes del rango
+        (date(2026, 10, 9), "tempo"),  # sustituye a las series del día 8
+        (date(2026, 10, 10), "long"),  # después del rango: se conserva
+    ]
 
 def test_plan_progress(conn):
     service.save_training_plan(conn, make_plan())

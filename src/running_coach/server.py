@@ -14,11 +14,12 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 from mcp.server import MCPServer
+from pydantic import BaseModel, Field
 
 from running_coach import db, service
 from running_coach.config import timezone_name
 from running_coach.metrics import HeartRateZone, format_duration, format_pace, pace_s_per_km, parse_duration
-from running_coach.models import SESSION_TYPES, Activity
+from running_coach.models import SESSION_TYPES, Activity, PlannedSession, TrainingPlan
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,141 @@ def delete_run_payload(conn: psycopg.Connection, run_id: int) -> dict:
         "deleted": True,
         "run": {"id": deleted["id"], "start": _local(deleted["start_time"]),
                 "distance_km": round(deleted["distance_m"] / 1000, 2)},
+    }
+
+# ---------- Planes de entrenamiento ----------
+
+class SessionInput(BaseModel):
+    """Una sesión del plan tal como la describe Claude."""
+
+    day: str = Field(description="Fecha de la sesión, AAAA-MM-DD")
+    session_type: Literal[SESSION_TYPES]
+    description: str = Field(description="Qué hacer con detalle: calentamiento, bloques, recuperaciones "
+                                         "y vuelta a la calma, con ritmos o zonas")
+    distance_km: float | None = Field(None, gt=0, description="Distancia objetivo en km")
+    duration: str | None = Field(None, description="Duración objetivo, 'mm:ss' o 'h:mm:ss'")
+    pace_fast: str | None = Field(None, description="Ritmo objetivo más rápido, 'm:ss' por km")
+    pace_slow: str | None = Field(None, description="Ritmo objetivo más lento, 'm:ss' por km")
+    hr_zone: int | None = Field(None, ge=1, le=5, description="Zona de pulsaciones objetivo (1-5)")
+
+
+def _parse_pace(text: str | None) -> float | None:
+    """'5:20' o '5:20/km' -> 320 segundos por km."""
+    return parse_duration(text.removesuffix("/km")) if text else None
+
+
+def _to_planned_session(s: SessionInput) -> PlannedSession:
+    return PlannedSession(
+        day=_parse_date(s.day),
+        session_type=s.session_type,
+        description=s.description,
+        target_distance_m=s.distance_km * 1000 if s.distance_km else None,
+        target_duration_s=parse_duration(s.duration) if s.duration else None,
+        target_pace_fast_s=_parse_pace(s.pace_fast),
+        target_pace_slow_s=_parse_pace(s.pace_slow),
+        target_hr_zone=s.hr_zone,
+    )
+
+
+def _target_payload(s: PlannedSession) -> dict:
+    paces = [format_duration(p) for p in (s.target_pace_fast_s, s.target_pace_slow_s) if p is not None]
+    return {
+        "distance_km": _round(s.target_distance_m / 1000, 2) if s.target_distance_m else None,
+        "duration": format_duration(s.target_duration_s) if s.target_duration_s else None,
+        "pace": f"{'-'.join(paces)}/km" if paces else None,
+        "hr_zone": s.target_hr_zone,
+    }
+
+
+def save_plan_payload(conn: psycopg.Connection, *, name: str, start_date: str, end_date: str,
+                      sessions: list[SessionInput], goal: str | None = None, notes: str | None = None) -> dict:
+    db.init_schema(conn)
+    previous = db.get_active_plan(conn)
+    plan = service.save_training_plan(conn, TrainingPlan(
+        name=name,
+        start_date=_parse_date(start_date),
+        end_date=_parse_date(end_date),
+        goal=goal,
+        notes=notes,
+        sessions=[_to_planned_session(s) for s in sessions],
+    ))
+    return {
+        "saved": True,
+        "plan_id": plan.id,
+        "sessions": len(plan.sessions),
+        "archived_previous_plan": previous.name if previous else None,
+    }
+
+
+def replan_payload(conn: psycopg.Connection, *, from_date: str, sessions: list[SessionInput],
+                   to_date: str | None = None) -> dict:
+    plan = service.replan(conn, _parse_date(from_date), [_to_planned_session(s) for s in sessions],
+                          to_day=_parse_date(to_date) if to_date else None)
+    return {"saved": True, "plan_id": plan.id, "sessions_in_plan": len(plan.sessions)}
+
+
+def plan_payload(conn: psycopg.Connection) -> dict:
+    progress = service.active_plan_progress(conn)
+    if progress is None:
+        return {
+            "active_plan": None,
+            "next_step": "No hay ningún plan. Si el usuario quiere uno, analiza sus datos, propónselo "
+                         "y guárdalo con save_training_plan cuando lo apruebe.",
+        }
+    plan = progress.plan
+    sessions = []
+    for p in progress.sessions:
+        s = p.session
+        actual = None
+        if p.runs:
+            actual = {
+                "runs": p.runs,
+                "distance_km": round(p.actual_distance_m / 1000, 2),
+                "moving_time": format_duration(p.actual_moving_time_s),
+                "pace": format_pace(pace_s_per_km(p.actual_distance_m, p.actual_moving_time_s)),
+                "avg_hr": _round(p.actual_avg_hr, 0),
+            }
+        sessions.append({
+            "id": s.id,
+            "day": s.day.isoformat(),
+            "weekday": WEEKDAYS[s.day.weekday()],
+            "session_type": s.session_type,
+            "description": s.description,
+            "target": _target_payload(s),
+            "status": p.status,
+            "actual": actual,
+        })
+    done = sum(p.status == "done" for p in progress.sessions)
+    past = sum(p.status in ("done", "missed") for p in progress.sessions)
+    return {
+        "active_plan": {
+            "id": plan.id,
+            "name": plan.name,
+            "goal": plan.goal,
+            "start_date": plan.start_date.isoformat(),
+            "end_date": plan.end_date.isoformat(),
+            "notes": plan.notes,
+        },
+        "summary": {
+            "sessions": len(sessions),
+            "done": done,
+            "missed": past - done,
+            "pending": len(sessions) - past,
+            "compliance_percent": round(100 * done / past) if past else None,
+        },
+        "sessions": sessions,
+        "unplanned_runs": [
+            {"day": r.day.isoformat(), "distance_km": round(r.distance_m / 1000, 2),
+             "moving_time": format_duration(r.moving_time_s), "avg_hr": _round(r.avg_hr, 0)}
+            for r in progress.unplanned_runs
+        ],
+        "notes": [
+            "status se deduce de las carreras registradas ese día: done (hubo carrera), missed (día pasado "
+            "sin carrera), today o pending. Varias carreras el mismo día se suman en actual.",
+            "unplanned_runs son carreras en días sin sesión planificada.",
+            "Para ajustar sesiones usa replan_sessions con el rango de fechas a cambiar; "
+            "crea un plan nuevo solo si cambia el objetivo.",
+        ],
     }
 
 # ---------- Herramientas MCP ----------

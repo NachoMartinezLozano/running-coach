@@ -4,7 +4,7 @@ import json
 import pytest
 
 from running_coach import db, server, service
-
+from running_coach.server import SessionInput
 
 def test_profile_without_max_hr_says_what_is_missing(conn):
     payload = server.profile_payload(conn)
@@ -68,3 +68,45 @@ def test_delete_run(conn):
 
     assert server.delete_run_payload(conn, run_id)["deleted"]
     assert not server.delete_run_payload(conn, run_id)["deleted"]  # ya no existe
+
+PLAN_SESSIONS = [
+    SessionInput(day="2025-01-07", session_type="easy", description="Rodaje suave", distance_km=6, hr_zone=2),
+    SessionInput(day="2025-01-09", session_type="intervals", description="6 x 800 m",
+                 pace_fast="5:20", pace_slow="5:30/km"),
+]
+
+
+def save_test_plan(conn, name="Plan de prueba", sessions=PLAN_SESSIONS):
+    return server.save_plan_payload(conn, name=name, start_date="2025-01-06", end_date="2025-03-01",
+                                    sessions=sessions, goal="10 km")
+
+
+def test_plan_payload_without_plan(conn):
+    assert server.plan_payload(conn)["active_plan"] is None
+
+
+def test_save_and_get_training_plan(conn):
+    saved = save_test_plan(conn)
+
+    payload = server.plan_payload(conn)
+
+    json.dumps(payload)
+    assert saved["sessions"] == 2 and saved["archived_previous_plan"] is None
+    assert payload["active_plan"]["name"] == "Plan de prueba"
+    assert payload["sessions"][1]["target"]["pace"] == "5:20-5:30/km"
+    assert payload["sessions"][0]["status"] == "missed"  # fechas pasadas sin carreras
+    assert payload["summary"]["compliance_percent"] == 0
+    assert save_test_plan(conn, name="Otro")["archived_previous_plan"] == "Plan de prueba"
+
+
+def test_replan_sessions_changes_only_the_range(conn):
+    save_test_plan(conn, sessions=PLAN_SESSIONS + [
+        SessionInput(day="2025-01-14", session_type="long", description="Tirada larga", distance_km=8),
+    ])
+
+    server.replan_payload(conn, from_date="2025-01-08", to_date="2025-01-12", sessions=[
+        SessionInput(day="2025-01-10", session_type="tempo", description="Tempo 20 min"),
+    ])
+
+    days = [s["day"] for s in server.plan_payload(conn)["sessions"]]
+    assert days == ["2025-01-07", "2025-01-10", "2025-01-14"]
