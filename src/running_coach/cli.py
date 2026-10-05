@@ -22,6 +22,7 @@ from running_coach.service import (
     training_load,
     update_profile,
     weekly_summary,
+    active_plan_progress,
 )
 
 
@@ -72,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     load = commands.add_parser("load", help="Carga de entrenamiento semanal")
     load.add_argument("--weeks", type=int, default=8, help="Número de semanas (por defecto: 8)")
 
+    commands.add_parser("plan", help="Plan de entrenamiento activo: planificado frente a realizado")
     return parser
 
 def duration_arg(text: str) -> float:
@@ -111,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_log(args)
         if args.command == "load":
             return _run_load(args)
+        if args.command == "plan":
+            return _run_plan()
     except psycopg.OperationalError as exc:
         print(f"No se puede conectar a PostgreSQL. ¿Está arrancado el contenedor? "
               f"(docker compose up -d)\nDetalle: {exc}", file=sys.stderr)
@@ -241,6 +245,42 @@ def _run_profile(args: argparse.Namespace) -> int:
     _print_profile(profile)
     return 0
 
+STATUS_LABELS = {"done": "hecha", "missed": "no hecha", "today": "hoy", "pending": "pendiente"}
+
+
+def _run_plan() -> int:
+    with db.connect() as conn:
+        progress = active_plan_progress(conn)
+    if progress is None:
+        print("No hay ningún plan activo. Pídele a Claude que te prepare uno.")
+        return 0
+
+    plan = progress.plan
+    print(f"{plan.name}  ({plan.start_date} a {plan.end_date})")
+    if plan.goal:
+        print(f"Objetivo: {plan.goal}")
+    print(f"\n{'Fecha':<12}{'Tipo':<11}{'Sesión':<42}{'Estado':<11}Realizado")
+    for p in progress.sessions:
+        s = p.session
+        actual = (f"{p.actual_distance_m / 1000:.1f} km  {format_duration(p.actual_moving_time_s)}"
+                  if p.runs else "")
+        print(f"{s.day.isoformat():<12}{s.session_type:<11}{_shorten(s.description, 40):<42}"
+              f"{STATUS_LABELS[p.status]:<11}{actual}")
+
+    if progress.unplanned_runs:
+        print("\nCarreras fuera del plan:")
+        for r in progress.unplanned_runs:
+            print(f"  {r.day.isoformat()}  {r.distance_m / 1000:.1f} km  {format_duration(r.moving_time_s)}")
+
+    done = sum(p.status == "done" for p in progress.sessions)
+    past = sum(p.status in ("done", "missed") for p in progress.sessions)
+    if past:
+        print(f"\nCumplimiento: {done} de {past} sesiones ya pasadas")
+    return 0
+
+
+def _shorten(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 3] + "..."
 
 def _print_profile(profile: AthleteProfile) -> None:
     for name, label in PROFILE_LABELS.items():

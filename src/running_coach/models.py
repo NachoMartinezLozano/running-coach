@@ -73,3 +73,29 @@ class AthleteProfile:
     weekly_days: int | None = None  # días a la semana que puede entrenar
     notes: str | None = None
     updated_at: datetime | None = None
+
+@dataclass
+class PlannedSession:
+    """Una sesión del plan de entrenamiento."""
+
+    day: date
+    session_type: str  # uno de SESSION_TYPES
+    description: str  # p. ej. "6 x 800 m a ritmo de 10K, 2 min de recuperación"
+    target_distance_m: float | None = None
+    target_duration_s: float | None = None
+    target_pace_fast_s: float | None = None  # rango de ritmo objetivo, en segundos por km
+    target_pace_slow_s: float | None = None
+    target_hr_zone: int | None = None  # 1 a 5
+    id: int | None = None
+
+
+@dataclass
+class TrainingPlan:
+    name: str
+    start_date: date
+    end_date: date
+    goal: str | None = None
+    notes: str | None = None
+    sessions: list[PlannedSession] = field(default_factory=list)
+    status: str = "active"  # "active" o "archived"
+    id: int | None = None

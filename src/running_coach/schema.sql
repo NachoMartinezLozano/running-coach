@@ -55,3 +55,36 @@ CREATE TABLE IF NOT EXISTS athlete_profile (
     notes       TEXT,                                    -- lesiones, disponibilidad, preferencias...
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Planes de entrenamiento. Como mucho uno activo; los anteriores quedan archivados como historial.
+CREATE TABLE IF NOT EXISTS training_plans (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name        TEXT NOT NULL,
+    goal        TEXT,
+    start_date  DATE NOT NULL,
+    end_date    DATE NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    notes       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_date >= start_date)
+);
+
+-- Índice único parcial: solo afecta a las filas activas, y como la expresión es
+-- constante, impide que haya dos a la vez
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_plan ON training_plans ((true)) WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS planned_sessions (
+    id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    plan_id            BIGINT NOT NULL REFERENCES training_plans (id) ON DELETE CASCADE,
+    day                DATE NOT NULL,
+    session_type       TEXT NOT NULL CHECK (session_type IN
+                           ('easy', 'recovery', 'long', 'tempo', 'intervals', 'race', 'warmup', 'other')),
+    description        TEXT NOT NULL,                 -- p. ej. "6 x 800 m a ritmo de 10K, 2 min de recuperación"
+    target_distance_m  REAL CHECK (target_distance_m > 0),
+    target_duration_s  REAL CHECK (target_duration_s > 0),
+    target_pace_fast_s REAL CHECK (target_pace_fast_s > 0),  -- rango de ritmo objetivo, en s/km
+    target_pace_slow_s REAL CHECK (target_pace_slow_s > 0),
+    target_hr_zone     SMALLINT CHECK (target_hr_zone BETWEEN 1 AND 5),
+    CHECK (target_pace_fast_s <= target_pace_slow_s)
+);
+CREATE INDEX IF NOT EXISTS idx_planned_sessions_plan_day ON planned_sessions (plan_id, day);

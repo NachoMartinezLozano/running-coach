@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import psycopg
+from running_coach.models import PlannedSession, TrainingPlan
 
 from running_coach.metrics import (
     HeartRateZone,
@@ -260,3 +261,105 @@ def recent_runs(conn: psycopg.Connection, weeks: int, tz: str, today: date | Non
     today = today or local_today(tz)
     rows = conn.execute(RECENT_RUNS, {"first_day": period_start(today, weeks), "tz": tz}).fetchall()
     return [RunSummary(**row) for row in rows]
+
+# ---------- Plan de entrenamiento: planificado frente a realizado ----------
+
+PLAN_PROGRESS = """
+    WITH runs_by_day AS (
+        -- Lo que se corrió cada día del plan (un calentamiento y la carrera suman juntos)
+        SELECT (start_time AT TIME ZONE %(tz)s)::date AS day,
+               count(*) AS runs,
+               sum(distance_m) AS distance_m,
+               sum(COALESCE(moving_time_s, duration_s)) AS moving_time_s,
+               sum(avg_hr * COALESCE(moving_time_s, duration_s))
+                   / NULLIF(sum(COALESCE(moving_time_s, duration_s)) FILTER (WHERE avg_hr IS NOT NULL), 0)
+                   AS avg_hr
+        FROM activities
+        WHERE sport = 'running'
+          AND (start_time AT TIME ZONE %(tz)s)::date BETWEEN %(start)s AND %(end)s
+        GROUP BY 1
+    )
+    SELECT s.id, s.day, s.session_type, s.description, s.target_distance_m, s.target_duration_s,
+           s.target_pace_fast_s, s.target_pace_slow_s, s.target_hr_zone,
+           COALESCE(r.runs, 0) AS runs,
+           r.distance_m        AS actual_distance_m,
+           r.moving_time_s     AS actual_moving_time_s,
+           r.avg_hr            AS actual_avg_hr
+    FROM planned_sessions s
+    LEFT JOIN runs_by_day r USING (day)
+    WHERE s.plan_id = %(plan_id)s
+    ORDER BY s.day, s.id
+"""
+
+UNPLANNED_RUNS = """
+    -- Carreras dentro de las fechas del plan en días sin ninguna sesión planificada
+    SELECT (a.start_time AT TIME ZONE %(tz)s)::date AS day,
+           a.distance_m,
+           COALESCE(a.moving_time_s, a.duration_s) AS moving_time_s,
+           a.avg_hr
+    FROM activities a
+    WHERE a.sport = 'running'
+      AND (a.start_time AT TIME ZONE %(tz)s)::date BETWEEN %(start)s AND %(end)s
+      AND NOT EXISTS (SELECT 1 FROM planned_sessions s
+                      WHERE s.plan_id = %(plan_id)s
+                        AND s.day = (a.start_time AT TIME ZONE %(tz)s)::date)
+    ORDER BY a.start_time
+"""
+
+
+@dataclass
+class SessionProgress:
+    session: PlannedSession
+    status: str  # "done", "missed", "today" o "pending"
+    runs: int
+    actual_distance_m: float | None
+    actual_moving_time_s: float | None
+    actual_avg_hr: float | None
+
+
+@dataclass
+class UnplannedRun:
+    day: date
+    distance_m: float
+    moving_time_s: float
+    avg_hr: float | None
+
+
+@dataclass
+class PlanProgress:
+    plan: TrainingPlan
+    sessions: list[SessionProgress]
+    unplanned_runs: list[UnplannedRun]
+
+
+def session_status(day: date, runs: int, today: date) -> str:
+    """Estado de una sesión: se deduce de las carreras de ese día, no se guarda."""
+    if runs > 0:
+        return "done"
+    if day < today:
+        return "missed"
+    if day == today:
+        return "today"
+    return "pending"
+
+
+def plan_progress(conn: psycopg.Connection, plan: TrainingPlan, tz: str,
+                  today: date | None = None) -> PlanProgress:
+    """Cada sesión del plan junto a lo que realmente se corrió ese día."""
+    today = today or local_today(tz)
+    params = {"plan_id": plan.id, "start": plan.start_date, "end": plan.end_date, "tz": tz}
+    sessions = []
+    for row in conn.execute(PLAN_PROGRESS, params).fetchall():
+        session = PlannedSession(**{k: row[k] for k in (
+            "id", "day", "session_type", "description", "target_distance_m", "target_duration_s",
+            "target_pace_fast_s", "target_pace_slow_s", "target_hr_zone")})
+        sessions.append(SessionProgress(
+            session=session,
+            status=session_status(row["day"], row["runs"], today),
+            runs=row["runs"],
+            actual_distance_m=row["actual_distance_m"],
+            actual_moving_time_s=row["actual_moving_time_s"],
+            actual_avg_hr=row["actual_avg_hr"],
+        ))
+    unplanned = [UnplannedRun(**row) for row in conn.execute(UNPLANNED_RUNS, params).fetchall()]
+    return PlanProgress(plan=plan, sessions=sessions, unplanned_runs=unplanned)

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from running_coach import db, analytics
 from running_coach.config import timezone_name
 from running_coach.importers.strava_export import ImportFilters, import_strava_export
-from running_coach.models import AthleteProfile, Activity, SESSION_TYPES
+from running_coach.models import SESSION_TYPES, Activity, AthleteProfile, PlannedSession, TrainingPlan
 from running_coach.metrics import HeartRateZone, hr_zones
 from running_coach.importers.files import parse_activity_file
 
@@ -140,3 +140,46 @@ def recent_runs(conn: psycopg.Connection, weeks: int = 4) -> list[analytics.RunS
 def delete_run(conn: psycopg.Connection, run_id: int) -> dict | None:
     """Borra una carrera por su id. Devuelve sus datos básicos, o None si no existía."""
     return db.delete_activity(conn, run_id)
+
+# ---------- Planes de entrenamiento ----------
+
+def _validate_sessions(sessions: list[PlannedSession], first_day: date, last_day: date) -> None:
+    for s in sessions:
+        if not first_day <= s.day <= last_day:
+            raise ValueError(f"La sesión del {s.day} está fuera del periodo {first_day} a {last_day}.")
+        if s.session_type not in SESSION_TYPES:
+            raise ValueError(f"Tipo de sesión no válido: {s.session_type!r}. Opciones: {', '.join(SESSION_TYPES)}")
+        if s.target_hr_zone is not None and not 1 <= s.target_hr_zone <= 5:
+            raise ValueError("La zona de pulsaciones debe estar entre 1 y 5.")
+        if (s.target_pace_fast_s is not None and s.target_pace_slow_s is not None
+                and s.target_pace_fast_s > s.target_pace_slow_s):
+            raise ValueError(f"Sesión del {s.day}: el ritmo rápido debe ser menor (en s/km) que el lento.")
+
+
+def save_training_plan(conn: psycopg.Connection, plan: TrainingPlan) -> TrainingPlan:
+    """Guarda un plan nuevo como activo. El plan activo anterior queda archivado."""
+    if plan.end_date < plan.start_date:
+        raise ValueError("La fecha de fin del plan es anterior a la de inicio.")
+    _validate_sessions(plan.sessions, plan.start_date, plan.end_date)
+    db.init_schema(conn)
+    db.create_plan(conn, plan)
+    return plan
+
+
+def replan_from(conn: psycopg.Connection, from_day: date, sessions: list[PlannedSession]) -> TrainingPlan:
+    """Sustituye las sesiones del plan activo a partir de una fecha. Las anteriores no se tocan."""
+    plan = db.get_active_plan(conn)
+    if plan is None:
+        raise ValueError("No hay ningún plan activo.")
+    _validate_sessions(sessions, max(from_day, plan.start_date), plan.end_date)
+    db.replace_sessions_from(conn, plan.id, from_day, sessions)
+    return db.get_active_plan(conn)
+
+
+def active_plan_progress(conn: psycopg.Connection) -> analytics.PlanProgress | None:
+    """El plan activo con lo realizado en cada sesión, o None si no hay plan."""
+    db.init_schema(conn)
+    plan = db.get_active_plan(conn)
+    if plan is None:
+        return None
+    return analytics.plan_progress(conn, plan, tz=timezone_name())

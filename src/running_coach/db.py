@@ -7,7 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from running_coach.config import database_url
-from running_coach.models import Activity, AthleteProfile
+from running_coach.models import Activity, AthleteProfile, PlannedSession, TrainingPlan
 
 INSERT_ACTIVITY = """
     INSERT INTO activities (
@@ -143,3 +143,66 @@ def delete_activity(conn: psycopg.Connection, activity_id: int) -> dict | None:
         "DELETE FROM activities WHERE id = %s RETURNING id, start_time, distance_m",
         (activity_id,),
     ).fetchone()
+
+# ---------- Planes de entrenamiento ----------
+
+SESSION_COLUMNS = ("day", "session_type", "description", "target_distance_m", "target_duration_s",
+                   "target_pace_fast_s", "target_pace_slow_s", "target_hr_zone")
+
+INSERT_PLAN = """
+    INSERT INTO training_plans (name, goal, start_date, end_date, notes)
+    VALUES (%(name)s, %(goal)s, %(start_date)s, %(end_date)s, %(notes)s)
+    RETURNING id
+"""
+
+INSERT_SESSION = """
+    INSERT INTO planned_sessions (plan_id, day, session_type, description, target_distance_m,
+                                  target_duration_s, target_pace_fast_s, target_pace_slow_s, target_hr_zone)
+    VALUES (%(plan_id)s, %(day)s, %(session_type)s, %(description)s, %(target_distance_m)s,
+            %(target_duration_s)s, %(target_pace_fast_s)s, %(target_pace_slow_s)s, %(target_hr_zone)s)
+    RETURNING id
+"""
+
+SELECT_SESSIONS = """
+    SELECT id, day, session_type, description, target_distance_m, target_duration_s,
+           target_pace_fast_s, target_pace_slow_s, target_hr_zone
+    FROM planned_sessions
+    WHERE plan_id = %s
+    ORDER BY day, id
+"""
+
+
+def create_plan(conn: psycopg.Connection, plan: TrainingPlan) -> int:
+    """Guarda un plan como activo y archiva el que hubiera, todo en una transacción."""
+    with conn.transaction():
+        conn.execute("UPDATE training_plans SET status = 'archived' WHERE status = 'active'")
+        plan.id = conn.execute(INSERT_PLAN, {"name": plan.name, "goal": plan.goal, "start_date": plan.start_date,
+                                             "end_date": plan.end_date, "notes": plan.notes}).fetchone()["id"]
+        _insert_sessions(conn, plan.id, plan.sessions)
+    plan.status = "active"
+    return plan.id
+
+
+def get_active_plan(conn: psycopg.Connection) -> TrainingPlan | None:
+    row = conn.execute("SELECT id, name, goal, start_date, end_date, status, notes "
+                       "FROM training_plans WHERE status = 'active'").fetchone()
+    if row is None:
+        return None
+    sessions = conn.execute(SELECT_SESSIONS, (row["id"],)).fetchall()
+    return TrainingPlan(**row, sessions=[PlannedSession(**s) for s in sessions])
+
+
+def replace_sessions_from(conn: psycopg.Connection, plan_id: int, from_day,
+                          sessions: list[PlannedSession]) -> int:
+    """Sustituye las sesiones del plan a partir de `from_day` (incluido). Devuelve cuántas se borraron."""
+    with conn.transaction():
+        deleted = conn.execute("DELETE FROM planned_sessions WHERE plan_id = %s AND day >= %s",
+                               (plan_id, from_day)).rowcount
+        _insert_sessions(conn, plan_id, sessions)
+    return deleted
+
+
+def _insert_sessions(conn: psycopg.Connection, plan_id: int, sessions: list[PlannedSession]) -> None:
+    for s in sessions:
+        params = {column: getattr(s, column) for column in SESSION_COLUMNS}
+        s.id = conn.execute(INSERT_SESSION, {"plan_id": plan_id, **params}).fetchone()["id"]
