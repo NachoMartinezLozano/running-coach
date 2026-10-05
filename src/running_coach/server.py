@@ -490,6 +490,45 @@ def delete_run(run_id: int) -> dict:
     with _connection() as conn:
         return delete_run_payload(conn, run_id)
 
+@mcp.tool()
+def get_training_plan() -> dict:
+    """Plan de entrenamiento activo con cada sesión planificada, su estado (hecha, no hecha, hoy,
+    pendiente) y lo que realmente se corrió ese día, más el porcentaje de cumplimiento.
+    Úsalo para hacer seguimiento y antes de proponer cambios."""
+    with _connection() as conn:
+        return plan_payload(conn)
+
+
+@mcp.tool()
+def save_training_plan(name: str, start_date: str, end_date: str, sessions: list[SessionInput],
+                       goal: str | None = None, notes: str | None = None) -> dict:
+    """Guarda un plan de entrenamiento nuevo como plan activo. El plan activo anterior queda archivado.
+
+    Args:
+        name: nombre corto, p. ej. "10K 8 de enero".
+        start_date: primer día del plan, AAAA-MM-DD.
+        end_date: último día del plan (normalmente el de la carrera), AAAA-MM-DD.
+        sessions: una entrada por día de entrenamiento; los días de descanso no se guardan.
+        goal: objetivo del plan.
+        notes: criterios del plan (estructura por fases, progresión, ritmos de referencia...).
+
+    Antes de guardarlo, consulta el perfil y los datos del atleta, presenta el plan al usuario
+    y guárdalo solo cuando lo apruebe. Respeta los días por semana disponibles del perfil.
+    """
+    with _connection() as conn:
+        return save_plan_payload(conn, name=name, start_date=start_date, end_date=end_date,
+                                 sessions=sessions, goal=goal, notes=notes)
+
+
+@mcp.tool()
+def replan_sessions(from_date: str, sessions: list[SessionInput], to_date: str | None = None) -> dict:
+    """Ajusta el plan activo: sustituye las sesiones entre from_date y to_date (incluidas) por las nuevas.
+    Sin to_date, sustituye todas las sesiones desde from_date hasta el final del plan.
+    Las sesiones fuera de ese rango no cambian. Para ajustar una semana, usa su lunes y su domingo.
+    Explica el cambio al usuario y aplícalo cuando lo apruebe."""
+    with _connection() as conn:
+        return replan_payload(conn, from_date=from_date, sessions=sessions, to_date=to_date)
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)  # por defecto escribe en stderr
     mcp.run(transport="stdio")
